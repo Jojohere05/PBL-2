@@ -1,0 +1,50 @@
+# FinGuard - Security Scanner
+# Python dependencies
+
+# Web Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Async HTTP Client
+aiohttp==3.9.1
+aiofiles==23.2.1
+
+# Database
+sqlalchemy==2.0.25
+aiosqlite==0.19.0
+
+# Data Processing
+pandas==2.1.4
+openpyxl==3.1.2
+toml==0.10.2
+
+# Security & Auth
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+PyJWT==2.8.0
+
+# PDF Generation
+reportlab==4.0.8
+
+# Environment & Config
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Testing
+pytest==7.4.4
+pytest-asyncio==0.23.3
+httpx==0.26.0
+
+# Development
+black==23.12.1
+isort==5.13.2
+flake8==7.0.0
+
+# Optional: Vector search for RAG
+# sentence-transformers==2.2.2
+# faiss-cpu==1.7.4
+
+# Optional: LLM
+# openai==1.6.1

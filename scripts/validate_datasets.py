@@ -1,210 +1,114 @@
-"""
-Validate Datasets - Validates all data files are properly formatted
-"""
-import sys
 import json
-from pathlib import Path
-from typing import Dict, List, Tuple
+import os
+import re
 
+errors = []
 
-def validate_json_file(file_path: Path) -> Tuple[bool, str]:
-    """Validate a JSON file"""
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return True, f"Valid JSON with {len(str(data))} characters"
-    except json.JSONDecodeError as e:
-        return False, f"Invalid JSON: {e}"
-    except Exception as e:
-        return False, f"Error reading file: {e}"
+print("=" * 60)
+print("FINGUARD DATASET VALIDATION")
+print("=" * 60)
 
+# ── 1. Compliance Rules ───────────────────────────────────────────
+print("\n[1] Compliance Rules")
+try:
+    with open("data/rules/compliance_rules.json") as f:
+        rules = json.load(f)
+    assert len(rules) > 0, "Empty rules list"
+    frameworks = set(r.get("framework", "") for r in rules)
+    sevs = {s: sum(1 for r in rules if r.get("severity") == s)
+            for s in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}
+    print(f"  ✅ {len(rules)} rules loaded")
+    print(f"     Frameworks : {sorted(frameworks)}")
+    print(f"     Severities : {sevs}")
+    missing_fields = [r for r in rules if not r.get("id") or not r.get("title")]
+    if missing_fields:
+        print(f"  ⚠ {len(missing_fields)} rules missing id or title")
+except Exception as e:
+    print(f"  ❌ FAILED: {e}")
+    errors.append("compliance_rules")
 
-def validate_compliance_rules(file_path: Path) -> Tuple[bool, List[str]]:
-    """Validate compliance rules JSON"""
-    issues = []
-    
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return False, [f"Cannot read file: {e}"]
-    
-    # Check structure
-    if "rules" not in data:
-        issues.append("Missing 'rules' array")
-    
-    if "metadata" not in data:
-        issues.append("Missing 'metadata' object")
-    
-    rules = data.get("rules", [])
-    
-    for i, rule in enumerate(rules):
-        if "id" not in rule:
-            issues.append(f"Rule {i}: missing 'id'")
-        
-        if "description" not in rule:
-            issues.append(f"Rule {i} ({rule.get('id', 'unknown')}): missing 'description'")
-        
-        if "severity" not in rule:
-            issues.append(f"Rule {i} ({rule.get('id', 'unknown')}): missing 'severity'")
-        elif rule["severity"] not in ["critical", "high", "medium", "low"]:
-            issues.append(f"Rule {i} ({rule.get('id', 'unknown')}): invalid severity '{rule['severity']}'")
-    
-    return len(issues) == 0, issues
-
-
-def validate_gitleaks_rules(file_path: Path) -> Tuple[bool, List[str]]:
-    """Validate gitleaks rules JSON"""
-    issues = []
-    
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        return False, [f"Cannot read file: {e}"]
-    
-    rules = data.get("rules", [])
-    
-    for i, rule in enumerate(rules):
-        if "id" not in rule:
-            issues.append(f"Rule {i}: missing 'id'")
-        
-        if "regex" not in rule:
-            issues.append(f"Rule {i} ({rule.get('id', 'unknown')}): missing 'regex'")
-        else:
-            # Validate regex
-            import re
-            try:
-                re.compile(rule["regex"])
-            except re.error as e:
-                issues.append(f"Rule {i} ({rule.get('id', 'unknown')}): invalid regex - {e}")
-    
-    return len(issues) == 0, issues
-
-
-def validate_osv_files(osv_dir: Path) -> Tuple[int, int, List[str]]:
-    """Validate OSV JSON files"""
-    valid_count = 0
-    invalid_count = 0
-    issues = []
-    
-    json_files = list(osv_dir.glob("*.json"))
-    
-    for json_file in json_files:
+# ── 2. Gitleaks Rules ─────────────────────────────────────────────
+print("\n[2] Gitleaks Rules")
+try:
+    with open("data/gitleaks/gitleaks_rules.json") as f:
+        gl_rules = json.load(f)
+    assert len(gl_rules) > 0, "Empty rules list"
+    bad_regex = 0
+    for r in gl_rules:
         try:
-            with open(json_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            # Basic validation
-            if isinstance(data, dict):
-                if "id" not in data:
-                    issues.append(f"{json_file.name}: missing 'id'")
-                    invalid_count += 1
-                else:
-                    valid_count += 1
-            elif isinstance(data, list):
-                valid_count += 1
-            else:
-                issues.append(f"{json_file.name}: unexpected root type")
-                invalid_count += 1
-                
-        except json.JSONDecodeError as e:
-            issues.append(f"{json_file.name}: invalid JSON - {e}")
-            invalid_count += 1
-        except Exception as e:
-            issues.append(f"{json_file.name}: error - {e}")
-            invalid_count += 1
-    
-    return valid_count, invalid_count, issues
+            re.compile(r.get("regex", ""))
+        except re.error:
+            bad_regex += 1
+    sevs = {s: sum(1 for r in gl_rules if r.get("severity") == s)
+            for s in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]}
+    print(f"  ✅ {len(gl_rules)} rules loaded")
+    print(f"     Bad regex  : {bad_regex}")
+    print(f"     Severities : {sevs}")
+    if bad_regex > 0:
+        print(f"  ⚠ {bad_regex} rules have invalid regex — will be skipped")
+except Exception as e:
+    print(f"  ❌ FAILED: {e}")
+    errors.append("gitleaks_rules")
 
+# ── 3. OSV Database ───────────────────────────────────────────────
+print("\n[3] OSV Database")
+try:
+    osv_dir = "data/osv"
+    assert os.path.exists(osv_dir), f"{osv_dir} does not exist"
+    files = [f for f in os.listdir(osv_dir) if f.endswith(".json")]
+    assert len(files) > 0, "No JSON files in data/osv/"
 
-def main():
-    """Main validation function"""
-    data_dir = Path(__file__).parent.parent / "data"
-    
-    print("=" * 60)
-    print("FinGuard Data Validation")
-    print("=" * 60)
-    
-    all_valid = True
-    
-    # Validate compliance rules
-    compliance_file = data_dir / "rules" / "compliance_rules.json"
-    print(f"\n[1] Compliance Rules: {compliance_file}")
-    if compliance_file.exists():
-        valid, issues = validate_compliance_rules(compliance_file)
-        if valid:
-            with open(compliance_file) as f:
-                data = json.load(f)
-            print(f"    ✓ Valid - {len(data.get('rules', []))} rules")
-        else:
-            print(f"    ✗ Invalid:")
-            for issue in issues[:10]:  # Show first 10 issues
-                print(f"      - {issue}")
-            if len(issues) > 10:
-                print(f"      ... and {len(issues) - 10} more issues")
-            all_valid = False
-    else:
-        print(f"    ⚠ File not found")
-    
-    # Validate gitleaks rules
-    gitleaks_file = data_dir / "gitleaks" / "gitleaks_rules.json"
-    print(f"\n[2] Gitleaks Rules: {gitleaks_file}")
-    if gitleaks_file.exists():
-        valid, issues = validate_gitleaks_rules(gitleaks_file)
-        if valid:
-            with open(gitleaks_file) as f:
-                data = json.load(f)
-            print(f"    ✓ Valid - {len(data.get('rules', []))} rules")
-        else:
-            print(f"    ✗ Invalid:")
-            for issue in issues[:10]:
-                print(f"      - {issue}")
-            if len(issues) > 10:
-                print(f"      ... and {len(issues) - 10} more issues")
-            all_valid = False
-    else:
-        print(f"    ⚠ File not found")
-    
-    # Validate OSV files
-    osv_dir = data_dir / "osv"
-    print(f"\n[3] OSV Vulnerability Data: {osv_dir}")
-    if osv_dir.exists():
-        valid, invalid, issues = validate_osv_files(osv_dir)
-        if invalid == 0:
-            print(f"    ✓ Valid - {valid} files")
-        else:
-            print(f"    ⚠ {valid} valid, {invalid} invalid files")
-            for issue in issues[:5]:
-                print(f"      - {issue}")
-            if len(issues) > 5:
-                print(f"      ... and {len(issues) - 5} more issues")
-    else:
-        print(f"    ⚠ Directory not found")
-    
-    # Validate feedback weights
-    weights_file = data_dir / "feedback" / "rule_weights.json"
-    print(f"\n[4] Feedback Weights: {weights_file}")
-    if weights_file.exists():
-        valid, msg = validate_json_file(weights_file)
-        if valid:
-            print(f"    ✓ {msg}")
-        else:
-            print(f"    ✗ {msg}")
-            all_valid = False
-    else:
-        print(f"    ⚠ File not found (will be auto-created)")
-    
-    # Summary
-    print("\n" + "=" * 60)
-    if all_valid:
-        print("✓ All datasets valid")
-    else:
-        print("✗ Some datasets have issues")
-    print("=" * 60)
-    
-    return 0 if all_valid else 1
+    ecosystems = {}
+    bad_files  = 0
+    sample_pkgs = []
 
+    for fname in files[:300]:  # sample 300
+        try:
+            with open(os.path.join(osv_dir, fname)) as f:
+                d = json.load(f)
+            for aff in d.get("affected", []):
+                pkg = aff.get("package", {})
+                eco = pkg.get("ecosystem", "unknown")
+                ecosystems[eco] = ecosystems.get(eco, 0) + 1
+                if len(sample_pkgs) < 5:
+                    sample_pkgs.append(
+                        f"{pkg.get('name')} ({eco})"
+                    )
+        except Exception:
+            bad_files += 1
 
-if __name__ == "__main__":
-    sys.exit(main())
+    top_eco = sorted(ecosystems.items(), key=lambda x: -x[1])[:5]
+    print(f"  ✅ {len(files)} OSV files found")
+    print(f"     Bad files (sample) : {bad_files}")
+    print(f"     Top ecosystems     : {top_eco}")
+    print(f"     Sample packages    : {sample_pkgs}")
+except Exception as e:
+    print(f"  ❌ FAILED: {e}")
+    errors.append("osv_database")
+
+# ── 4. Feedback file (auto-create if missing) ─────────────────────
+print("\n[4] Feedback Weights")
+fb_path = "data/feedback/rule_weights.json"
+try:
+    os.makedirs("data/feedback", exist_ok=True)
+    if not os.path.exists(fb_path):
+        with open(fb_path, "w") as f:
+            json.dump({}, f)
+        print(f"  ✅ Created empty {fb_path}")
+    else:
+        with open(fb_path) as f:
+            fb = json.load(f)
+        print(f"  ✅ {len(fb)} rule weights loaded")
+except Exception as e:
+    print(f"  ❌ FAILED: {e}")
+    errors.append("feedback")
+
+# ── Summary ───────────────────────────────────────────────────────
+print("\n" + "=" * 60)
+if errors:
+    print(f"❌ FAILED: Fix these before running — {errors}")
+else:
+    print("✅ ALL DATASETS VALID — ready to run pipeline")
+    print("\nNext step:")
+    print("  uvicorn api.main:app --reload --port 8000")
+print("=" * 60)

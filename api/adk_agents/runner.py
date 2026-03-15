@@ -7,7 +7,7 @@ import aiohttp
 from pathlib import Path
 
 from .orchestrator_agent import OrchestratorAgent
-from routes.ws import get_connection_manager
+from api.routes.ws import get_connection_manager
 
 
 async def run_scan(
@@ -45,7 +45,7 @@ async def run_scan(
             await ws_manager.send_finding(scan_id, finding)
         
         # Calculate risk score
-        from risk_engine import calculate_risk_score
+        from api.risk_engine import calculate_risk_score
         risk_score = calculate_risk_score(results["findings"])
         results["summary"]["risk_score"] = risk_score
         
@@ -153,7 +153,7 @@ async def fetch_local_repo(path: str) -> dict:
 
 async def store_scan_results(scan_id: str, repo_url: str, results: dict):
     """Store scan results in database"""
-    from database import get_db
+    from api.database import get_db
     
     # TODO: Implement database storage
     pass

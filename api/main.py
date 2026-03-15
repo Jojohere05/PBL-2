@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from routes import scan, dashboard, feedback, ws
-from database import init_db
+from api.routes import scan, dashboard, feedback, ws
+from api.database import init_db
 
 
 @asynccontextmanager

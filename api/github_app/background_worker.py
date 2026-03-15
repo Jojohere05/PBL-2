@@ -6,7 +6,7 @@ from typing import Optional
 import uuid
 from datetime import datetime
 
-from adk_agents.runner import run_scan
+from api.adk_agents.runner import run_scan
 from .github_client import GitHubClient
 
 

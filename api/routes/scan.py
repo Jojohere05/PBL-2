@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from typing import Optional, List
 import uuid
 
-from adk_agents.runner import run_scan
-from risk_engine import calculate_risk_score
+from api.adk_agents.runner import run_scan
+from api.risk_engine import calculate_risk_score
 
 router = APIRouter()
 

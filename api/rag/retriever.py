@@ -1,138 +1,164 @@
-"""
-RAG Retriever - Retrieves relevant context for findings
-"""
-from typing import List, Dict, Any, Optional
 import json
+import os
 from pathlib import Path
+from typing import List, Dict
+
+RULES_PATH = Path(__file__).resolve().parents[2] / "data" / "rules" / "compliance_rules.json"
+
+KEYWORD_MAP = {
+    "TF_DB_PUBLIC":                ["database","public","network",
+                                    "rbi","customer data","accessible"],
+    "TF_S3_PUBLIC_ACL":            ["storage","s3","public","dpdp"],
+    "TF_S3_PUBLIC_BLOCK_DISABLED": ["s3","public","access control"],
+    "TF_SG_OPEN_INGRESS":          ["network","firewall","ingress","sebi"],
+    "TF_RDS_ENCRYPTION_MISSING":   ["encryption","rds","rbi","pci"],
+    "TF_EBS_NOT_ENCRYPTED":        ["encryption","ebs","pci","dpdp"],
+    "TF_STORAGE_UNENCRYPTED":      ["encryption","storage","pci","rbi"],
+    "TF_ENCRYPT_AT_REST_DISABLED": ["encryption","at rest","pci","rbi"],
+    "TF_SNS_SQS_NO_KMS":           ["kms","sns","sqs","encryption"],
+    "data_sensitivity_risk":       ["secret","credential","api key",
+                                    "pci","dpdp","sensitive","token"],
+    "vulnerability_risk":          ["vulnerability","cve","patch",
+                                    "sebi","dependency","outdated"],
+    "infrastructure_risk":         ["infrastructure","cloud","rbi",
+                                    "network","aws","terraform"],
+}
+
+_rules_cache: List[Dict] = None
+
+
+def _load_rules() -> List[Dict]:
+    global _rules_cache
+    if _rules_cache is None:
+        try:
+            with open(RULES_PATH) as f:
+                _rules_cache = json.load(f)
+        except Exception as e:
+            print(f"[RAG] Warning: could not load rules: {e}")
+            _rules_cache = []
+    return _rules_cache
+
+
+def retrieve_rules(violation: Dict, top_k: int = 3) -> List[Dict]:
+    """
+    Standard RAG: retrieve top_k rules for a violation dict.
+    Used for static context injection before LLM reasoning.
+    """
+    rules     = _load_rules()
+    rule_id   = violation.get("rule_id", "")
+    dimension = violation.get("dimension", "")
+
+    keywords = set()
+    for key, kws in KEYWORD_MAP.items():
+        if key in rule_id or key in dimension:
+            keywords.update(kws)
+    for part in rule_id.lower().replace("_", " ").split():
+        if len(part) > 2:
+            keywords.add(part)
+
+    if not keywords or not rules:
+        return []
+
+    scored = []
+    for rule in rules:
+        text = " ".join([
+            rule.get("title", ""),
+            rule.get("description", ""),
+            rule.get("section", ""),
+            rule.get("check", ""),
+            " ".join(rule.get("keywords", []))
+        ]).lower()
+        score = sum(1 for kw in keywords if kw in text)
+        if score > 0:
+            scored.append((score, rule))
+
+    scored.sort(key=lambda x: -x[0])
+    return [r for _, r in scored[:top_k]]
+
+
+def retrieve_rules_by_query(query: str, top_k: int = 3) -> List[Dict]:
+    """
+    Agentic RAG: retrieve rules using a free-text query.
+    Called BY the orchestrator agent when it wants more specific context.
+    The agent decides what to search for — not pre-mapped.
+    """
+    rules = _load_rules()
+    if not rules or not query:
+        return []
+
+    query_words = set(
+        w.lower() for w in query.replace(",", " ").split()
+        if len(w) > 2
+    )
+
+    scored = []
+    for rule in rules:
+        text = " ".join([
+            rule.get("title", ""),
+            rule.get("description", ""),
+            rule.get("framework", ""),
+            rule.get("section", ""),
+            rule.get("check", ""),
+            rule.get("fix", ""),
+            " ".join(rule.get("keywords", []))
+        ]).lower()
+        score = sum(1 for w in query_words if w in text)
+        if score > 0:
+            scored.append((score, rule))
+
+    scored.sort(key=lambda x: -x[0])
+    return [r for _, r in scored[:top_k]]
+
+
+def get_all_frameworks() -> List[str]:
+    """Returns list of unique frameworks in the compliance DB."""
+    rules = _load_rules()
+    return list(set(r.get("framework", "") for r in rules if r.get("framework")))
+
+
+def get_rules_by_framework(framework: str, top_k: int = 5) -> List[Dict]:
+    """Get rules filtered by specific framework (RBI, PCI, DPDP, SEBI)."""
+    rules = _load_rules()
+    matched = [r for r in rules
+               if r.get("framework", "").upper() == framework.upper()]
+    return matched[:top_k]
 
 
 class RuleRetriever:
-    """Retrieves relevant rules and context for findings"""
-    
-    def __init__(self):
-        self.compliance_rules = self._load_compliance_rules()
-        self.gitleaks_rules = self._load_gitleaks_rules()
-        self.osv_data = self._load_osv_data()
-    
-    def _load_compliance_rules(self) -> Dict:
-        """Load compliance rules"""
-        path = Path(__file__).parent.parent.parent / "data" / "rules" / "compliance_rules.json"
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"rules": []}
-    
-    def _load_gitleaks_rules(self) -> Dict:
-        """Load gitleaks rules"""
-        path = Path(__file__).parent.parent.parent / "data" / "gitleaks" / "gitleaks_rules.json"
-        try:
-            with open(path, "r") as f:
-                return json.load(f)
-        except FileNotFoundError:
-            return {"rules": []}
-    
-    def _load_osv_data(self) -> Dict:
-        """Load OSV vulnerability index"""
-        # Return indexed data for quick lookup
+    """Compatibility wrapper for class-based callers (e.g., explainer)."""
+
+    def retrieve_rules(self, violation: Dict, top_k: int = 3) -> List[Dict]:
+        return retrieve_rules(violation, top_k=top_k)
+
+    def retrieve_rules_by_query(self, query: str, top_k: int = 3) -> List[Dict]:
+        return retrieve_rules_by_query(query, top_k=top_k)
+
+    def get_all_frameworks(self) -> List[str]:
+        return get_all_frameworks()
+
+    def get_rules_by_framework(self, framework: str, top_k: int = 5) -> List[Dict]:
+        return get_rules_by_framework(framework, top_k=top_k)
+
+    def get_rule_context(self, rule_id: str) -> Dict:
+        """Return context dict expected by explainer for a rule id."""
+        if not rule_id:
+            return {}
+        rid = rule_id.lower()
+        for rule in _load_rules():
+            candidate = str(rule.get("id", "")).lower()
+            if candidate == rid:
+                return {
+                    "rule": rule,
+                    "remediation": rule.get("fix", ""),
+                    "references": rule.get("references", []),
+                }
         return {}
-    
-    def get_rule_context(self, rule_id: str) -> Optional[Dict]:
-        """Get full context for a rule"""
-        # Search in compliance rules
-        for rule in self.compliance_rules.get("rules", []):
-            if rule.get("id") == rule_id:
-                return {
-                    "source": "compliance",
-                    "rule": rule,
-                    "remediation": rule.get("remediation", ""),
-                    "references": rule.get("references", [])
-                }
-        
-        # Search in gitleaks rules
-        for rule in self.gitleaks_rules.get("rules", []):
-            if rule.get("id") == rule_id:
-                return {
-                    "source": "gitleaks",
-                    "rule": rule,
-                    "remediation": self._get_secret_remediation(rule),
-                    "references": []
-                }
-        
-        return None
-    
-    def get_vulnerability_context(self, vuln_id: str) -> Optional[Dict]:
-        """Get context for a vulnerability"""
-        osv_path = Path(__file__).parent.parent.parent / "data" / "osv"
-        
-        for json_file in osv_path.glob("*.json"):
-            try:
-                with open(json_file, "r") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict) and data.get("id") == vuln_id:
-                        return {
-                            "source": "osv",
-                            "vulnerability": data,
-                            "remediation": self._get_vuln_remediation(data),
-                            "references": data.get("references", [])
-                        }
-            except (json.JSONDecodeError, IOError):
-                continue
-        
-        return None
-    
-    def _get_secret_remediation(self, rule: Dict) -> str:
-        """Get remediation advice for secret finding"""
-        rule_id = rule.get("id", "")
-        
-        remediations = {
-            "aws": "Rotate the AWS credentials immediately. Use IAM roles or AWS Secrets Manager instead of hardcoded credentials.",
-            "github": "Revoke the GitHub token immediately. Use GitHub Actions secrets or environment variables.",
-            "api": "Remove the API key from code. Use environment variables or a secrets management service.",
-            "private-key": "Remove the private key from the repository. Use a secrets manager or secure key storage.",
-            "password": "Remove hardcoded passwords. Use environment variables or a secrets management service."
-        }
-        
-        for key, remediation in remediations.items():
-            if key in rule_id.lower():
-                return remediation
-        
-        return "Remove the secret from code and use environment variables or a secrets management service."
-    
-    def _get_vuln_remediation(self, vuln: Dict) -> str:
-        """Get remediation advice for vulnerability"""
-        affected = vuln.get("affected", [])
-        
-        if affected:
-            pkg = affected[0]
-            ranges = pkg.get("ranges", [])
-            for r in ranges:
-                events = r.get("events", [])
-                for event in events:
-                    if "fixed" in event:
-                        return f"Upgrade to version {event['fixed']} or later."
-        
-        return "Check the vulnerability details for specific remediation steps."
-    
-    def search_similar_rules(self, query: str, limit: int = 5) -> List[Dict]:
-        """Search for rules similar to query"""
-        # Simple keyword matching (replace with vector search in production)
-        results = []
-        query_lower = query.lower()
-        
-        for rule in self.compliance_rules.get("rules", []):
-            description = rule.get("description", "").lower()
-            if any(word in description for word in query_lower.split()):
-                results.append({"source": "compliance", "rule": rule})
-        
-        for rule in self.gitleaks_rules.get("rules", []):
-            description = rule.get("description", "").lower()
-            if any(word in description for word in query_lower.split()):
-                results.append({"source": "gitleaks", "rule": rule})
-        
-        return results[:limit]
+
+    def get_vulnerability_context(self, vuln_id: str) -> Dict:
+        """Fallback vulnerability context using compliance rule match."""
+        return self.get_rule_context(vuln_id)
 
 
 def create_retriever() -> RuleRetriever:
-    """Factory function to create retriever"""
+    """Factory for class-based retriever usage."""
     return RuleRetriever()

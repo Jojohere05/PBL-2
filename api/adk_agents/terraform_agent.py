@@ -1,176 +1,124 @@
-"""
-Terraform Agent - Scans Terraform configurations for security issues
-"""
-from typing import List, Dict, Any
+import os
 import re
-import json
-from pathlib import Path
 
-COMPLIANCE_RULES_PATH = Path(__file__).parent.parent.parent / "data" / "rules" / "compliance_rules.json"
+SKIP_DIRS = {".git"}
 
 
-class TerraformAgent:
-    """Agent for detecting security issues in Terraform configurations"""
-    
-    def __init__(self):
-        self.rules = self._load_rules()
-        self.name = "terraform_agent"
-        self.description = "Detects security misconfigurations in Terraform code"
-    
-    def _load_rules(self) -> List[Dict]:
-        """Load compliance rules"""
+def _extract_blocks(content: str) -> list:
+    results = []
+    for m in re.finditer(
+        r'resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', content
+    ):
+        rtype, rname = m.group(1), m.group(2)
+        start, depth, i = m.end(), 1, m.end()
+        while i < len(content) and depth > 0:
+            if content[i] == "{":   depth += 1
+            elif content[i] == "}": depth -= 1
+            i += 1
+        results.append((rtype, rname, content[start:i - 1]))
+    return results
+
+
+def scan_terraform_files(repo_path: str) -> dict:
+    """
+    Scans .tf files for infrastructure misconfigurations.
+    Returns raw violations — no LLM, no decisions.
+    """
+    violations = []
+    tf_files   = []
+
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fname in files:
+            if fname.endswith(".tf"):
+                tf_files.append(os.path.join(root, fname))
+
+    for fpath in tf_files:
+        rel = os.path.relpath(fpath, repo_path)
         try:
-            with open(COMPLIANCE_RULES_PATH, "r") as f:
-                data = json.load(f)
-                return [r for r in data.get("rules", []) if r.get("type") == "terraform"]
-        except FileNotFoundError:
-            return self._default_rules()
-    
-    def _default_rules(self) -> List[Dict]:
-        """Default Terraform security rules"""
-        return [
-            {
-                "id": "tf-aws-s3-public-read",
-                "description": "S3 bucket should not have public read access",
-                "pattern": r'acl\s*=\s*"public-read"',
-                "severity": "critical",
-                "resource_type": "aws_s3_bucket"
-            },
-            {
-                "id": "tf-aws-s3-no-encryption",
-                "description": "S3 bucket should have server-side encryption enabled",
-                "pattern": r'resource\s+"aws_s3_bucket"\s+"[^"]+"\s*{(?:(?!server_side_encryption_configuration).)*}',
-                "severity": "high",
-                "resource_type": "aws_s3_bucket"
-            },
-            {
-                "id": "tf-aws-sg-open-ingress",
-                "description": "Security group should not allow unrestricted ingress",
-                "pattern": r'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"\s*\]',
-                "severity": "high",
-                "resource_type": "aws_security_group"
-            },
-            {
-                "id": "tf-aws-rds-no-encryption",
-                "description": "RDS instance should have encryption enabled",
-                "pattern": r'storage_encrypted\s*=\s*false',
-                "severity": "high",
-                "resource_type": "aws_db_instance"
-            },
-            {
-                "id": "tf-aws-rds-public",
-                "description": "RDS instance should not be publicly accessible",
-                "pattern": r'publicly_accessible\s*=\s*true',
-                "severity": "critical",
-                "resource_type": "aws_db_instance"
-            },
-            {
-                "id": "tf-aws-ec2-no-imdsv2",
-                "description": "EC2 instance should use IMDSv2",
-                "pattern": r'http_tokens\s*=\s*"optional"',
-                "severity": "medium",
-                "resource_type": "aws_instance"
-            },
-            {
-                "id": "tf-azure-storage-https-only",
-                "description": "Azure storage account should enforce HTTPS",
-                "pattern": r'enable_https_traffic_only\s*=\s*false',
-                "severity": "high",
-                "resource_type": "azurerm_storage_account"
-            },
-            {
-                "id": "tf-hardcoded-secret",
-                "description": "Hardcoded secret in Terraform configuration",
-                "pattern": r'(password|secret|api_key|access_key)\s*=\s*"[^"]{8,}"',
-                "severity": "critical",
-                "resource_type": "any"
-            }
-        ]
-    
-    async def scan(self, content: str, file_path: str) -> List[Dict[str, Any]]:
-        """Scan Terraform file for security issues"""
-        if not file_path.endswith(".tf"):
-            return []
-        
-        findings = []
-        lines = content.split("\n")
-        
-        for rule in self.rules:
-            pattern = re.compile(rule["pattern"], re.IGNORECASE | re.MULTILINE | re.DOTALL)
-            
-            # Search in full content for multi-line patterns
-            matches = pattern.finditer(content)
-            for match in matches:
-                # Find line number
-                line_num = content[:match.start()].count("\n") + 1
-                
-                findings.append({
-                    "rule_id": rule["id"],
-                    "type": "terraform",
-                    "severity": rule.get("severity", "medium"),
-                    "description": rule["description"],
-                    "file_path": file_path,
-                    "line": line_num,
-                    "resource_type": rule.get("resource_type", "unknown"),
-                    "match": match.group()[:100]
-                })
-        
-        # Additional checks
-        findings.extend(await self._check_missing_tags(content, file_path))
-        findings.extend(await self._check_deprecated_resources(content, file_path))
-        
-        return findings
-    
-    async def _check_missing_tags(self, content: str, file_path: str) -> List[Dict]:
-        """Check for resources missing required tags"""
-        findings = []
-        # Pattern to find resources without tags block
-        resource_pattern = re.compile(r'resource\s+"([^"]+)"\s+"([^"]+)"\s*{([^}]*)}', re.DOTALL)
-        
-        for match in resource_pattern.finditer(content):
-            resource_type = match.group(1)
-            resource_name = match.group(2)
-            resource_body = match.group(3)
-            
-            if "tags" not in resource_body.lower():
-                line_num = content[:match.start()].count("\n") + 1
-                findings.append({
-                    "rule_id": "tf-missing-tags",
-                    "type": "terraform",
-                    "severity": "low",
-                    "description": f"Resource {resource_type}.{resource_name} is missing tags",
-                    "file_path": file_path,
-                    "line": line_num,
-                    "resource_type": resource_type
-                })
-        
-        return findings
-    
-    async def _check_deprecated_resources(self, content: str, file_path: str) -> List[Dict]:
-        """Check for deprecated resource types"""
-        deprecated = [
-            ("aws_s3_bucket_object", "aws_s3_object"),
-            ("aws_elasticsearch_domain", "aws_opensearch_domain")
-        ]
-        
-        findings = []
-        for old, new in deprecated:
-            if f'resource "{old}"' in content:
-                line_num = content.find(f'resource "{old}"')
-                line_num = content[:line_num].count("\n") + 1
-                findings.append({
-                    "rule_id": "tf-deprecated-resource",
-                    "type": "terraform",
-                    "severity": "low",
-                    "description": f"Deprecated resource type {old}, use {new} instead",
-                    "file_path": file_path,
-                    "line": line_num,
-                    "resource_type": old
-                })
-        
-        return findings
+            content = open(fpath, "r", errors="ignore").read()
+        except Exception:
+            continue
 
+        for rtype, rname, body in _extract_blocks(content):
+            res = f"{rtype}.{rname}"
 
-def create_agent() -> TerraformAgent:
-    """Factory function to create terraform agent"""
-    return TerraformAgent()
+            checks = [
+                (r'publicly_accessible\s*=\s*true',
+                 "TF_DB_PUBLIC", "CRITICAL",
+                 "Database is publicly accessible",
+                 "infrastructure_risk"),
+                (r'storage_encrypted\s*=\s*false',
+                 "TF_STORAGE_UNENCRYPTED", "HIGH",
+                 "Storage encryption disabled",
+                 "infrastructure_risk"),
+                (r'encrypt_at_rest\s*=\s*false',
+                 "TF_ENCRYPT_AT_REST_DISABLED", "HIGH",
+                 "Encrypt-at-rest disabled",
+                 "infrastructure_risk"),
+            ]
+            for pattern, rule_id, sev, msg, dim in checks:
+                if re.search(pattern, body):
+                    violations.append({
+                        "rule_id": rule_id, "file": rel,
+                        "resource": res, "severity": sev,
+                        "message": msg, "dimension": dim
+                    })
+
+            if "s3_bucket" in rtype:
+                if re.search(r'acl\s*=\s*"public-read', body):
+                    violations.append({
+                        "rule_id": "TF_S3_PUBLIC_ACL", "file": rel,
+                        "resource": res, "severity": "CRITICAL",
+                        "message": "S3 bucket public-read ACL",
+                        "dimension": "infrastructure_risk"
+                    })
+                if re.search(r'block_public_acls\s*=\s*false', body):
+                    violations.append({
+                        "rule_id": "TF_S3_PUBLIC_BLOCK_DISABLED",
+                        "file": rel, "resource": res,
+                        "severity": "HIGH",
+                        "message": "S3 public access block disabled",
+                        "dimension": "infrastructure_risk"
+                    })
+
+            if "security_group" in rtype:
+                if re.search(
+                    r'cidr_blocks\s*=\s*\[.*"0\.0\.0\.0/0"', body
+                ):
+                    violations.append({
+                        "rule_id": "TF_SG_OPEN_INGRESS", "file": rel,
+                        "resource": res, "severity": "HIGH",
+                        "message": "Security group allows 0.0.0.0/0",
+                        "dimension": "infrastructure_risk"
+                    })
+
+            if rtype == "aws_ebs_volume":
+                if not re.search(r'encrypted\s*=\s*true', body):
+                    violations.append({
+                        "rule_id": "TF_EBS_NOT_ENCRYPTED", "file": rel,
+                        "resource": res, "severity": "HIGH",
+                        "message": "EBS volume missing encryption",
+                        "dimension": "infrastructure_risk"
+                    })
+
+            if rtype == "aws_db_instance":
+                if not re.search(r'storage_encrypted\s*=\s*true', body):
+                    violations.append({
+                        "rule_id": "TF_RDS_ENCRYPTION_MISSING",
+                        "file": rel, "resource": res,
+                        "severity": "HIGH",
+                        "message": "RDS missing storage_encrypted=true",
+                        "dimension": "infrastructure_risk"
+                    })
+
+            if rtype in ("aws_sns_topic", "aws_sqs_queue"):
+                if not re.search(r'kms_master_key_id', body):
+                    violations.append({
+                        "rule_id": "TF_SNS_SQS_NO_KMS", "file": rel,
+                        "resource": res, "severity": "MEDIUM",
+                        "message": f"{rtype} missing KMS encryption",
+                        "dimension": "infrastructure_risk"
+                    })
+
+    return {"violations": violations, "count": len(violations)}

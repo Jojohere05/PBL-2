@@ -1,131 +1,252 @@
-"""
-Orchestrator Agent - Coordinates all scanning agents
-"""
-from typing import List, Dict, Any, Optional
-import asyncio
+import json
+import os
+from google.adk.agents import Agent
+from google.adk.tools   import FunctionTool
 
-from .secrets_agent import SecretsAgent
-from .dependency_agent import DependencyAgent
-from .terraform_agent import TerraformAgent
+from api.adk_agents.secrets_agent    import scan_files_for_secrets
+from api.adk_agents.dependency_agent import scan_dependencies
+from api.adk_agents.terraform_agent  import scan_terraform_files
+from api.rag.retriever               import (
+    retrieve_rules,
+    retrieve_rules_by_query,
+    get_rules_by_framework
+)
 
+# ── Tool wrappers ─────────────────────────────────────────────────
 
-class OrchestratorAgent:
-    """Orchestrates multiple scanning agents"""
-    
-    def __init__(self):
-        self.agents = {
-            "secrets": SecretsAgent(),
-            "dependencies": DependencyAgent(),
-            "terraform": TerraformAgent()
-        }
-        self.name = "orchestrator_agent"
-        self.description = "Coordinates security scanning across all agents"
-    
-    async def scan_file(
-        self,
-        content: str,
-        file_path: str,
-        scan_types: Optional[List[str]] = None
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """Scan a single file with relevant agents"""
-        if scan_types is None:
-            scan_types = list(self.agents.keys())
-        
-        results = {}
-        tasks = []
-        
-        for scan_type in scan_types:
-            if scan_type in self.agents:
-                agent = self.agents[scan_type]
-                if self._should_scan(file_path, scan_type):
-                    tasks.append(self._run_agent(agent, content, file_path, scan_type))
-        
-        completed = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for result in completed:
-            if isinstance(result, tuple):
-                scan_type, findings = result
-                results[scan_type] = findings
-            elif isinstance(result, Exception):
-                # Log error but continue
-                pass
-        
-        return results
-    
-    async def _run_agent(
-        self,
-        agent,
-        content: str,
-        file_path: str,
-        scan_type: str
-    ) -> tuple:
-        """Run a single agent and return results"""
-        findings = await agent.scan(content, file_path)
-        return (scan_type, findings)
-    
-    def _should_scan(self, file_path: str, scan_type: str) -> bool:
-        """Determine if file should be scanned by agent type"""
-        file_lower = file_path.lower()
-        
-        if scan_type == "secrets":
-            # Scan most files for secrets
-            excluded = [".png", ".jpg", ".gif", ".ico", ".woff", ".ttf", ".eot"]
-            return not any(file_lower.endswith(ext) for ext in excluded)
-        
-        elif scan_type == "dependencies":
-            dep_files = [
-                "requirements.txt", "package.json", "package-lock.json",
-                "gemfile", "gemfile.lock", "go.mod", "go.sum",
-                "cargo.toml", "cargo.lock", "pom.xml", "build.gradle"
-            ]
-            return any(file_lower.endswith(f) for f in dep_files)
-        
-        elif scan_type == "terraform":
-            return file_lower.endswith(".tf") or file_lower.endswith(".tf.json")
-        
-        return False
-    
-    async def scan_repository(
-        self,
-        files: Dict[str, str],
-        scan_types: Optional[List[str]] = None,
-        progress_callback=None
-    ) -> Dict[str, Any]:
-        """Scan entire repository"""
-        all_findings = []
-        summary = {
-            "total_files": len(files),
-            "scanned_files": 0,
-            "total_findings": 0,
-            "by_severity": {"critical": 0, "high": 0, "medium": 0, "low": 0},
-            "by_type": {}
-        }
-        
-        for idx, (file_path, content) in enumerate(files.items()):
-            results = await self.scan_file(content, file_path, scan_types)
-            
-            for scan_type, findings in results.items():
-                all_findings.extend(findings)
-                summary["by_type"][scan_type] = summary["by_type"].get(scan_type, 0) + len(findings)
-                
-                for finding in findings:
-                    severity = finding.get("severity", "medium")
-                    summary["by_severity"][severity] = summary["by_severity"].get(severity, 0) + 1
-            
-            summary["scanned_files"] += 1
-            
-            if progress_callback:
-                progress = int((idx + 1) / len(files) * 100)
-                await progress_callback(progress, file_path)
-        
-        summary["total_findings"] = len(all_findings)
-        
-        return {
-            "findings": all_findings,
-            "summary": summary
-        }
+def tool_scan_secrets(repo_path: str) -> str:
+    """
+    Scans repository for leaked secrets, API keys, tokens,
+    and credentials using gitleaks regex rules.
+    Returns JSON string with violations list.
+    """
+    result = scan_files_for_secrets(repo_path)
+    return json.dumps(result)
 
 
-def create_agent() -> OrchestratorAgent:
-    """Factory function to create orchestrator agent"""
-    return OrchestratorAgent()
+def tool_scan_dependencies(repo_path: str) -> str:
+    """
+    Scans requirements.txt and package.json for known CVEs
+    using the OSV vulnerability database.
+    Returns JSON string with violations list.
+    """
+    result = scan_dependencies(repo_path)
+    return json.dumps(result)
+
+
+def tool_scan_terraform(repo_path: str) -> str:
+    """
+    Scans Terraform .tf files for infrastructure misconfigurations
+    including public DBs, unencrypted storage, open security groups.
+    Returns JSON string with violations list.
+    """
+    result = scan_terraform_files(repo_path)
+    return json.dumps(result)
+
+
+def tool_retrieve_compliance_rules(query: str) -> str:
+    """
+    Agentic RAG: retrieve relevant Indian compliance rules
+    (RBI, PCI-DSS, DPDP, SEBI) based on a free-text query.
+
+    Use this when you need more specific regulatory context
+    for a violation you have found.
+
+    Example queries:
+    - "RBI rules about database encryption"
+    - "PCI DSS requirements for API key storage"
+    - "DPDP Act data exposure penalties"
+    - "SEBI cybersecurity patch management"
+
+    Returns JSON string with matching compliance rules.
+    """
+    rules = retrieve_rules_by_query(query, top_k=4)
+    return json.dumps(rules)
+
+
+def tool_retrieve_rules_for_violation(violation_json: str) -> str:
+    """
+    Standard RAG: given a violation as JSON string,
+    retrieve the most relevant compliance rules for it.
+    Use this to get regulatory context for a specific violation.
+    Returns JSON string with matching compliance rules.
+    """
+    try:
+        violation = json.loads(violation_json)
+    except Exception:
+        return json.dumps([])
+    rules = retrieve_rules(violation, top_k=3)
+    return json.dumps(rules)
+
+
+def tool_get_framework_rules(framework: str) -> str:
+    """
+    Retrieve rules for a specific compliance framework.
+    Valid frameworks: RBI, PCI-DSS, DPDP, SEBI
+    Use this when you want to check all rules for one framework.
+    Returns JSON string with rules list.
+    """
+    rules = get_rules_by_framework(framework, top_k=5)
+    return json.dumps(rules)
+
+
+def tool_validate_violation(violation_json: str,
+                             compliance_context_json: str) -> str:
+    """
+    LLM validation tool: given a violation and its compliance context,
+    decide: CONFIRM, ESCALATE, or DISMISS.
+
+    This is where the LLM does primary detection + validation:
+    - CONFIRM: violation is real and severity is correct
+    - ESCALATE: violation is real but more severe than detected
+      (e.g. payment context makes it CRITICAL)
+    - DISMISS: likely false positive (e.g. test file, example value)
+
+    Returns JSON:
+    {
+      "verdict": "CONFIRM" | "ESCALATE" | "DISMISS",
+      "adjusted_severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW",
+      "reasoning": "...",
+      "false_positive_reason": "..." (only if DISMISS)
+    }
+    """
+    # This tool is called BY the ADK agent (Gemini) itself
+    # The agent fills this in through reasoning
+    # We return a prompt scaffold — Gemini completes the reasoning
+    try:
+        v   = json.loads(violation_json)
+        ctx = json.loads(compliance_context_json)
+    except Exception:
+        return json.dumps({"verdict": "CONFIRM",
+                           "adjusted_severity": "HIGH",
+                           "reasoning": "Could not parse inputs"})
+
+    # Build context string for Gemini to reason over
+    rules_text = "\n".join(
+        f"- [{r.get('framework')}] §{r.get('section')} "
+        f"{r.get('title')}: {r.get('description')}"
+        for r in ctx
+    ) if ctx else "No specific rules retrieved."
+
+    # Return structured context for the agent to reason on
+    return json.dumps({
+        "violation":         v,
+        "compliance_rules":  rules_text,
+        "instruction": (
+            "Based on the violation and compliance rules above, "
+            "return verdict as CONFIRM/ESCALATE/DISMISS, "
+            "adjusted_severity, and reasoning."
+        )
+    })
+
+
+# ── ADK Orchestrator Agent ────────────────────────────────────────
+
+orchestrator_agent = Agent(
+    name="finguard_orchestrator",
+    model="gemini-2.0-flash",
+    description=(
+        "FinGuard compliance orchestrator. Coordinates all security "
+        "agents, retrieves relevant Indian compliance regulations via "
+        "RAG, and validates each violation using LLM reasoning."
+    ),
+    instruction="""
+You are the FinGuard DevSecOps compliance orchestrator for Indian
+fintech companies. Your job is to run a complete security scan and
+return validated, enriched violations.
+
+## YOUR WORKFLOW — follow exactly in order:
+
+### PHASE 1: Run all 3 scan tools
+Call all three tools with the repo_path from the user message:
+1. tool_scan_secrets(repo_path)
+2. tool_scan_dependencies(repo_path)
+3. tool_scan_terraform(repo_path)
+
+Parse the JSON from each tool result. Collect ALL violations from
+all three tools into one list. Never drop any violation at this stage.
+
+### PHASE 2: Static RAG — inject compliance context
+For each violation in your collected list:
+- Call tool_retrieve_rules_for_violation(violation_as_json_string)
+- Store the returned rules as "matched_rules" for that violation
+
+### PHASE 3: Agentic RAG — targeted retrieval
+For violations that involve payment, authentication, or PII:
+- Call tool_retrieve_compliance_rules with a targeted query
+  Examples:
+  - "RBI IT Framework database security requirements"
+  - "PCI DSS cardholder data protection API keys"
+  - "DPDP Act personal data breach penalties India"
+- Use the retrieved rules to inform your validation in Phase 4
+
+### PHASE 4: LLM Validation — confirm, escalate, or dismiss
+For each violation, reason carefully:
+
+CONFIRM when:
+- The pattern clearly indicates a real secret/misconfiguration
+- The value looks like a real credential (not "example", "test",
+  "fake", "placeholder", "changeme", "your_key_here", "xxxx")
+- The misconfiguration is in production infrastructure code
+- The CVE affects the exact installed version
+
+ESCALATE when:
+- The file is in a payment or financial context
+  (stripe, razorpay, upi, payment, wallet, card, transaction)
+- The secret is in a Terraform or deployment file (not just .env)
+- The CVE has CVSS score >= 9.0 but was detected as HIGH
+- Multiple violations compound each other (e.g. public DB + no encryption)
+
+DISMISS when:
+- The "secret" contains test values: test, example, fake, placeholder,
+  changeme, your_key, xxx, 000000, dummy, sample
+- The file is clearly a test file: test_, _test, spec, fixture, mock
+- The violation is in a comment or documentation string
+- The CVE does not apply to the actual usage pattern
+
+### PHASE 5: Return final result
+Return ONLY this exact JSON — no markdown, no extra text:
+
+{
+  "all_violations": [
+    {
+      "rule_id": "...",
+      "file": "...",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "dimension": "...",
+      "message": "...",
+      "verdict": "CONFIRM|ESCALATE|DISMISS",
+      "adjusted_severity": "CRITICAL|HIGH|MEDIUM|LOW",
+      "validation_reasoning": "one sentence why",
+      "matched_rules": [...compliance rules from RAG...],
+      "rag_context": "which frameworks apply and why"
+    }
+  ],
+  "agent_counts": {
+    "secrets": <number from secrets scan>,
+    "dependencies": <number from deps scan>,
+    "terraform": <number from terraform scan>
+  },
+  "dismissed_count": <number of DISMISS verdicts>,
+  "escalated_count": <number of ESCALATE verdicts>
+}
+
+CRITICAL RULES:
+- Include ALL violations including DISMISS — do not drop them
+- Only violations with verdict CONFIRM or ESCALATE affect risk score
+- DISMISSED violations are kept for audit trail with verdict=DISMISS
+- Never invent violations the tools did not find
+- Never change rule_id, file, or line values
+- adjusted_severity must be >= original severity for ESCALATE
+- adjusted_severity must equal original severity for CONFIRM
+""",
+    tools=[
+        FunctionTool(func=tool_scan_secrets),
+        FunctionTool(func=tool_scan_dependencies),
+        FunctionTool(func=tool_scan_terraform),
+        FunctionTool(func=tool_retrieve_compliance_rules),
+        FunctionTool(func=tool_retrieve_rules_for_violation),
+        FunctionTool(func=tool_get_framework_rules),
+        FunctionTool(func=tool_validate_violation),
+    ]
+)

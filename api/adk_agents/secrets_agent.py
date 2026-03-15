@@ -1,103 +1,68 @@
-"""
-Secrets Agent - Detects secrets and credentials in code
-"""
-from typing import List, Dict, Any
+import os
 import re
 import json
-from pathlib import Path
 
-GITLEAKS_RULES_PATH = Path(__file__).parent.parent.parent / "data" / "gitleaks" / "gitleaks_rules.json"
+RULES_PATH  = "data/gitleaks/gitleaks_rules.json"
+SKIP_EXT    = {".png",".jpg",".jpeg",".gif",".svg",".ico",
+               ".zip",".tar",".gz",".woff",".ttf",".eot",
+               ".mp4",".mp3",".bin",".exe",".dll"}
+SKIP_DIRS   = {".git","node_modules","__pycache__",".venv","venv"}
+MAX_FILE_SIZE = 1_000_000
 
 
-class SecretsAgent:
-    """Agent for detecting secrets, API keys, and credentials"""
-    
-    def __init__(self):
-        self.rules = self._load_rules()
-        self.name = "secrets_agent"
-        self.description = "Detects hardcoded secrets, API keys, and credentials"
-    
-    def _load_rules(self) -> List[Dict]:
-        """Load gitleaks rules"""
+def scan_files_for_secrets(repo_path: str) -> dict:
+    """
+    Scans all text files for secret leaks using gitleaks regex rules.
+    Returns raw violations — no LLM, no decisions.
+    """
+    try:
+        with open(RULES_PATH) as f:
+            rules = json.load(f)
+    except Exception as e:
+        return {"violations": [], "count": 0,
+                "error": f"Cannot load gitleaks rules: {e}"}
+
+    compiled = []
+    for rule in rules:
+        pattern = rule.get("regex", "")
+        if not pattern:
+            continue
         try:
-            with open(GITLEAKS_RULES_PATH, "r") as f:
-                data = json.load(f)
-                return data.get("rules", [])
-        except FileNotFoundError:
-            return self._default_rules()
-    
-    def _default_rules(self) -> List[Dict]:
-        """Default secret detection rules"""
-        return [
-            {
-                "id": "aws-access-key",
-                "description": "AWS Access Key ID",
-                "regex": r"AKIA[0-9A-Z]{16}",
-                "severity": "critical"
-            },
-            {
-                "id": "aws-secret-key",
-                "description": "AWS Secret Access Key",
-                "regex": r"(?i)aws(.{0,20})?(?-i)['\"][0-9a-zA-Z/+]{40}['\"]",
-                "severity": "critical"
-            },
-            {
-                "id": "github-token",
-                "description": "GitHub Token",
-                "regex": r"ghp_[0-9a-zA-Z]{36}|github_pat_[0-9a-zA-Z_]{22,}",
-                "severity": "critical"
-            },
-            {
-                "id": "generic-api-key",
-                "description": "Generic API Key",
-                "regex": r"(?i)(api[_-]?key|apikey|api_secret)['\"]?\s*[:=]\s*['\"][a-zA-Z0-9]{16,}['\"]",
-                "severity": "high"
-            },
-            {
-                "id": "private-key",
-                "description": "Private Key",
-                "regex": r"-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
-                "severity": "critical"
-            },
-            {
-                "id": "password-in-code",
-                "description": "Hardcoded Password",
-                "regex": r"(?i)(password|passwd|pwd)['\"]?\s*[:=]\s*['\"][^'\"]{8,}['\"]",
-                "severity": "high"
-            }
-        ]
-    
-    async def scan(self, content: str, file_path: str) -> List[Dict[str, Any]]:
-        """Scan content for secrets"""
-        findings = []
-        lines = content.split("\n")
-        
-        for rule in self.rules:
-            pattern = re.compile(rule["regex"])
-            for line_num, line in enumerate(lines, 1):
-                matches = pattern.finditer(line)
-                for match in matches:
-                    findings.append({
-                        "rule_id": rule["id"],
-                        "type": "secret",
-                        "severity": rule.get("severity", "high"),
-                        "description": rule["description"],
-                        "file_path": file_path,
-                        "line": line_num,
-                        "column": match.start(),
-                        "match": self._redact_secret(match.group()),
-                        "context": line.strip()[:100]
-                    })
-        
-        return findings
-    
-    def _redact_secret(self, secret: str) -> str:
-        """Redact secret value for safe display"""
-        if len(secret) <= 8:
-            return "*" * len(secret)
-        return secret[:4] + "*" * (len(secret) - 8) + secret[-4:]
+            compiled.append({
+                "id":       rule.get("id", "unknown"),
+                "pattern":  re.compile(pattern),
+                "severity": rule.get("severity", "HIGH")
+            })
+        except re.error:
+            continue
 
+    violations = []
+    for root, dirs, files in os.walk(repo_path):
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for fname in files:
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in SKIP_EXT:
+                continue
+            fpath = os.path.join(root, fname)
+            try:
+                if os.path.getsize(fpath) > MAX_FILE_SIZE:
+                    continue
+                with open(fpath, "r", errors="ignore") as f:
+                    lines = f.readlines()
+            except Exception:
+                continue
 
-def create_agent() -> SecretsAgent:
-    """Factory function to create secrets agent"""
-    return SecretsAgent()
+            for rule in compiled:
+                for lineno, line in enumerate(lines, 1):
+                    if rule["pattern"].search(line):
+                        violations.append({
+                            "rule_id":   rule["id"],
+                            "file":      os.path.relpath(fpath, repo_path),
+                            "line":      lineno,
+                            "severity":  rule["severity"],
+                            "dimension": "data_sensitivity_risk",
+                            "message":   f"Pattern '{rule['id']}' matched",
+                            "line_content": line.strip()[:120]
+                        })
+                        break  # one match per rule per file
+    return {"violations": violations, "count": len(violations)}

@@ -38,7 +38,8 @@ jobs:
           GDRIVE_GITLEAKS_TOML: ${{ secrets.GDRIVE_GITLEAKS_TOML }}
           GDRIVE_OSV_FOLDER_ID: ${{ secrets.GDRIVE_OSV_FOLDER_ID }}
         run: |
-          python scripts/download_data.py
+          python scripts/dataset_data.py
+
 
       - name: Validate datasets
         run: |

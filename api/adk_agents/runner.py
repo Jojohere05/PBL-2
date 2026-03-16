@@ -12,7 +12,6 @@ APP_NAME         = "finguard"
 
 
 def _extract_json(text: str) -> dict:
-    """Robustly extract JSON from ADK response."""
     if not text:
         return {}
     text = text.strip()

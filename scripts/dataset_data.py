@@ -30,10 +30,10 @@ def download():
 
     print("⬇️  Downloading compliance.xlsx...")
     gdown.download(
-    f"https://drive.google.com/uc?id={compliance_id}",
-    "data/raw/compliance.xlsx",
-    quiet=False
-)
+        f"https://drive.google.com/uc?id={compliance_id}",
+        "data/raw/compliance.xlsx",
+        quiet=False
+    )
     print("⬇️  Downloading gitleaks.toml...")
     gdown.download(f"https://drive.google.com/uc?id={gl_toml_id}",
                    "data/raw/gitleaks.toml", quiet=False)
@@ -47,8 +47,14 @@ def download():
         quiet=False
     )
     print("📂 Extracting osv_data.zip...")
+    os.makedirs("data/osv", exist_ok=True)
     with zipfile.ZipFile("osv_data.zip", "r") as z:
         z.extractall("data/osv")
+
+    # ADD THIS — verify after extract
+    files_found = [f for f in os.listdir("data/osv") if f.endswith(".json")]
+    print(f"✅ Extracted {len(files_found)} JSON files to data/osv/")
+
     os.remove("osv_data.zip")
     print("✅ OSV extracted!")
 

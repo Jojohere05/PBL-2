@@ -1,82 +1,31 @@
-"""
-Feedback Routes - API endpoints for user feedback on findings
-"""
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from typing import Optional
-from enum import Enum
 import json
-from pathlib import Path
+import os
+from fastapi import APIRouter
 
-router = APIRouter()
+router  = APIRouter()
+FB_PATH = "data/feedback/rule_weights.json"
 
-WEIGHTS_FILE = Path(__file__).parent.parent.parent / "data" / "feedback" / "rule_weights.json"
-
-
-class FeedbackType(str, Enum):
-    FALSE_POSITIVE = "false_positive"
-    TRUE_POSITIVE = "true_positive"
-    NEEDS_REVIEW = "needs_review"
-
-
-class FeedbackRequest(BaseModel):
-    finding_id: str
-    rule_id: str
-    feedback_type: FeedbackType
-    comment: Optional[str] = None
-
-
-@router.post("/submit")
-async def submit_feedback(request: FeedbackRequest):
-    """Submit feedback for a finding"""
-    # Load current weights
-    weights = _load_weights()
-    
-    # Update weight based on feedback
-    if request.rule_id not in weights["weights"]:
-        weights["weights"][request.rule_id] = {"score": 1.0, "feedback_count": 0}
-    
-    rule_weight = weights["weights"][request.rule_id]
-    
-    if request.feedback_type == FeedbackType.FALSE_POSITIVE:
-        rule_weight["score"] = max(0.1, rule_weight["score"] - 0.1)
-    elif request.feedback_type == FeedbackType.TRUE_POSITIVE:
-        rule_weight["score"] = min(2.0, rule_weight["score"] + 0.05)
-    
-    rule_weight["feedback_count"] += 1
-    weights["feedback_count"] += 1
-    
-    _save_weights(weights)
-    
-    return {"status": "success", "message": "Feedback recorded"}
-
-
-@router.get("/weights")
-async def get_rule_weights():
-    """Get current rule weights"""
-    return _load_weights()
-
-
-@router.get("/stats")
-async def get_feedback_stats():
-    """Get feedback statistics"""
-    weights = _load_weights()
-    return {
-        "total_feedback": weights["feedback_count"],
-        "rules_with_feedback": len(weights["weights"])
-    }
-
-
-def _load_weights():
+def _load():
     try:
-        with open(WEIGHTS_FILE, "r") as f:
+        with open(FB_PATH) as f:
             return json.load(f)
-    except FileNotFoundError:
-        return {"weights": {}, "feedback_count": 0, "last_updated": None}
+    except:
+        return {}
 
+def _save(d):
+    os.makedirs(os.path.dirname(FB_PATH), exist_ok=True)
+    with open(FB_PATH, "w") as f:
+        json.dump(d, f, indent=2)
 
-def _save_weights(weights):
-    from datetime import datetime
-    weights["last_updated"] = datetime.now().isoformat()
-    with open(WEIGHTS_FILE, "w") as f:
-        json.dump(weights, f, indent=2)
+@router.post("/api/feedback")
+def submit_feedback(rule_id: str, is_false_positive: bool):
+    w = _load()
+    if rule_id not in w:
+        w[rule_id] = {"fired": 0, "confirmed": 0, "false_positive": 0}
+    w[rule_id]["fired"] += 1
+    if is_false_positive:
+        w[rule_id]["false_positive"] += 1
+    else:
+        w[rule_id]["confirmed"] += 1
+    _save(w)
+    return {"status": "ok", "rule_id": rule_id, "weights": w[rule_id]}

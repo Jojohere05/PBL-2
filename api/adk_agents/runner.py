@@ -1,159 +1,174 @@
-"""
-Agent Runner - Executes scans using the orchestrator
-"""
-from typing import List, Optional
+import json
 import asyncio
-import aiohttp
-from pathlib import Path
+import re
+from google.adk.runners  import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai.types  import Content, Part
 
-from .orchestrator_agent import OrchestratorAgent
-from api.routes.ws import get_connection_manager
+from api.adk_agents.orchestrator_agent import orchestrator_agent
+
+_session_service = InMemorySessionService()
+APP_NAME         = "finguard"
 
 
-async def run_scan(
-    scan_id: str,
-    repo_url: str,
-    branch: str = "main",
-    scan_types: Optional[List[str]] = None
-):
-    """Run a complete scan on a repository"""
-    ws_manager = get_connection_manager()
-    orchestrator = OrchestratorAgent()
-    
+def _extract_json(text: str) -> dict:
+    """Robustly extract JSON from ADK response."""
+    if not text:
+        return {}
+    text = text.strip()
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"\s*```$",     "", text)
+    text = text.strip()
     try:
-        # Notify scan started
-        await ws_manager.send_progress(scan_id, 0, "initializing", "Starting scan...")
-        
-        # Clone or fetch repository
-        await ws_manager.send_progress(scan_id, 10, "fetching", "Fetching repository...")
-        files = await fetch_repository(repo_url, branch)
-        
-        # Define progress callback
-        async def progress_callback(progress: int, file_path: str):
-            adjusted_progress = 10 + int(progress * 0.8)  # Scale to 10-90%
-            await ws_manager.send_progress(scan_id, adjusted_progress, "scanning", f"Scanning {file_path}")
-        
-        # Run scan
-        results = await orchestrator.scan_repository(
-            files=files,
-            scan_types=scan_types,
-            progress_callback=progress_callback
-        )
-        
-        # Send findings as they're processed
-        for finding in results["findings"]:
-            await ws_manager.send_finding(scan_id, finding)
-        
-        # Calculate risk score
-        from api.risk_engine import calculate_risk_score
-        risk_score = calculate_risk_score(results["findings"])
-        results["summary"]["risk_score"] = risk_score
-        
-        # Store results in database
-        await store_scan_results(scan_id, repo_url, results)
-        
-        # Notify completion
-        await ws_manager.send_progress(scan_id, 100, "complete", "Scan completed")
-        await ws_manager.send_complete(scan_id, results["summary"])
-        
-        return results
-        
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r'\{.*\}', text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _filter_active_violations(violations: list) -> list:
+    """
+    Keep all violations but mark dismissed ones.
+    Only CONFIRM + ESCALATE violations affect risk scoring.
+    """
+    return [v for v in violations
+            if v.get("verdict", "CONFIRM") != "DISMISS"]
+
+
+async def run_adk_scan(repo_path: str) -> dict:
+    """
+    Runs ADK orchestrator which:
+    1. Calls all 3 scan tools
+    2. Retrieves compliance rules via RAG
+    3. Does agentic RAG for targeted queries
+    4. Validates each violation with LLM reasoning
+    """
+    runner = Runner(
+        agent=orchestrator_agent,
+        app_name=APP_NAME,
+        session_service=_session_service
+    )
+
+    session = await _session_service.create_session(
+        app_name=APP_NAME,
+        user_id="system"
+    )
+
+    message = Content(
+        role="user",
+        parts=[Part(text=json.dumps({
+            "repo_path": repo_path,
+            "instruction": (
+                "Run a complete FinGuard compliance scan on this "
+                "repository. Follow all phases: scan all 3 tools, "
+                "retrieve compliance rules via RAG, validate each "
+                "violation, and return the complete JSON result."
+            )
+        }))]
+    )
+
+    result_text = ""
+    try:
+        async for event in runner.run_async(
+            user_id="system",
+            session_id=session.id,
+            new_message=message
+        ):
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    result_text = event.content.parts[0].text
+                break
     except Exception as e:
-        await ws_manager.send_progress(scan_id, -1, "error", str(e))
-        raise
+        print(f"[ADK] Runner error: {e} — using fallback")
+        return await _fallback_scan(repo_path)
 
+    parsed = _extract_json(result_text)
 
-async def fetch_repository(repo_url: str, branch: str) -> dict:
-    """Fetch repository files"""
-    # For GitHub repos, use API to fetch files
-    if "github.com" in repo_url:
-        return await fetch_github_repo(repo_url, branch)
-    
-    # For local paths
-    if Path(repo_url).exists():
-        return await fetch_local_repo(repo_url)
-    
-    raise ValueError(f"Unsupported repository URL: {repo_url}")
+    # Validate structure
+    if "all_violations" not in parsed:
+        print("[ADK] Invalid response structure — using fallback")
+        return await _fallback_scan(repo_path)
 
+    # Separate active vs dismissed
+    all_v    = parsed.get("all_violations", [])
+    active_v = _filter_active_violations(all_v)
+    dismissed = [v for v in all_v if v.get("verdict") == "DISMISS"]
 
-async def fetch_github_repo(repo_url: str, branch: str) -> dict:
-    """Fetch files from GitHub repository"""
-    # Parse owner/repo from URL
-    parts = repo_url.rstrip("/").split("/")
-    owner = parts[-2]
-    repo = parts[-1].replace(".git", "")
-    
-    files = {}
-    
-    async with aiohttp.ClientSession() as session:
-        # Get repository tree
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
-        async with session.get(api_url) as response:
-            if response.status != 200:
-                raise ValueError(f"Failed to fetch repository: {response.status}")
-            
-            data = await response.json()
-            tree = data.get("tree", [])
-        
-        # Fetch file contents (limit to text files)
-        text_extensions = {
-            ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
-            ".tf", ".tfvars", ".go", ".rs", ".java", ".rb", ".php",
-            ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd",
-            ".md", ".txt", ".env", ".ini", ".cfg", ".conf",
-            ".html", ".css", ".scss", ".less", ".xml"
-        }
-        
-        for item in tree:
-            if item["type"] == "blob":
-                path = item["path"]
-                ext = Path(path).suffix.lower()
-                
-                if ext in text_extensions or any(
-                    name in path.lower() for name in 
-                    ["dockerfile", "makefile", "gemfile", "requirements", "package"]
-                ):
-                    # Fetch file content
-                    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}"
-                    try:
-                        async with session.get(raw_url) as file_response:
-                            if file_response.status == 200:
-                                content = await file_response.text()
-                                files[path] = content
-                    except Exception:
-                        continue
-    
-    return files
+    print(
+        f"[ADK] Scan complete: {len(all_v)} found, "
+        f"{len(active_v)} active, "
+        f"{len(dismissed)} dismissed, "
+        f"{parsed.get('escalated_count', 0)} escalated"
+    )
 
-
-async def fetch_local_repo(path: str) -> dict:
-    """Fetch files from local repository"""
-    files = {}
-    repo_path = Path(path)
-    
-    text_extensions = {
-        ".py", ".js", ".ts", ".jsx", ".tsx", ".json", ".yaml", ".yml",
-        ".tf", ".tfvars", ".go", ".rs", ".java", ".rb", ".php",
-        ".sh", ".bash", ".md", ".txt", ".env"
+    return {
+        "all_violations":   active_v,   # only active go to risk engine
+        "all_raw":          all_v,       # full audit trail
+        "dismissed":        dismissed,
+        "agent_counts":     parsed.get("agent_counts", {
+            "secrets": 0, "dependencies": 0, "terraform": 0
+        }),
+        "dismissed_count":  parsed.get("dismissed_count", 0),
+        "escalated_count":  parsed.get("escalated_count", 0)
     }
-    
-    for file_path in repo_path.rglob("*"):
-        if file_path.is_file():
-            ext = file_path.suffix.lower()
-            if ext in text_extensions:
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                    relative_path = str(file_path.relative_to(repo_path))
-                    files[relative_path] = content
-                except Exception:
-                    continue
-    
-    return files
 
 
-async def store_scan_results(scan_id: str, repo_url: str, results: dict):
-    """Store scan results in database"""
-    from api.database import get_db
-    
-    # TODO: Implement database storage
-    pass
+async def _fallback_scan(repo_path: str) -> dict:
+    """
+    Direct Python fallback when ADK fails.
+    No LLM validation — raw violations only.
+    """
+    print("[ADK] Fallback: running agents directly")
+    from api.adk_agents.secrets_agent    import scan_files_for_secrets
+    from api.adk_agents.dependency_agent import scan_dependencies
+    from api.adk_agents.terraform_agent  import scan_terraform_files
+
+    loop = asyncio.get_event_loop()
+    s, d, t = await asyncio.gather(
+        loop.run_in_executor(None, scan_files_for_secrets, repo_path),
+        loop.run_in_executor(None, scan_dependencies,      repo_path),
+        loop.run_in_executor(None, scan_terraform_files,   repo_path),
+    )
+
+    all_v = (s.get("violations", []) +
+             d.get("violations", []) +
+             t.get("violations", []))
+
+    return {
+        "all_violations":  all_v,
+        "all_raw":         all_v,
+        "dismissed":       [],
+        "agent_counts": {
+            "secrets":      s.get("count", 0),
+            "dependencies": d.get("count", 0),
+            "terraform":    t.get("count", 0)
+        },
+        "dismissed_count": 0,
+        "escalated_count": 0
+    }
+
+
+def run_agents_sync(repo_path: str) -> dict:
+    """Sync wrapper for background threads."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(run_adk_scan(repo_path))
+    except Exception as e:
+        print(f"[ADK] Sync error: {e}")
+        return {
+            "all_violations": [], "all_raw": [],
+            "dismissed": [], "dismissed_count": 0,
+            "escalated_count": 0,
+            "agent_counts": {
+                "secrets": 0, "dependencies": 0, "terraform": 0
+            }
+        }
+    finally:
+        loop.close()

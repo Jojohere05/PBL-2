@@ -29,9 +29,11 @@ def download():
     os.makedirs("data/osv",      exist_ok=True)
 
     print("⬇️  Downloading compliance.xlsx...")
-    gdown.download(f"https://drive.google.com/uc?id={compliance_id}",
-                   "data/raw/compliance_rules.xlsx", quiet=False)
-
+    gdown.download(
+    f"https://drive.google.com/uc?id={compliance_id}",
+    "data/raw/compliance.xlsx",
+    quiet=False
+)
     print("⬇️  Downloading gitleaks.toml...")
     gdown.download(f"https://drive.google.com/uc?id={gl_toml_id}",
                    "data/raw/gitleaks.toml", quiet=False)

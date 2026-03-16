@@ -36,13 +36,20 @@ def download():
     gdown.download(f"https://drive.google.com/uc?id={gl_toml_id}",
                    "data/raw/gitleaks.toml", quiet=False)
 
-    print("⬇️  Downloading osv folder (may take 10-15 mins)...")
-    gdown.download_folder(
-        f"https://drive.google.com/drive/folders/{osv_folder_id}",
-        output="data/osv",
-        quiet=False,
-        use_cookies=False
+    import zipfile
+
+    print("⬇️  Downloading osv_data.zip...")
+    gdown.download(
+        f"https://drive.google.com/uc?id={osv_folder_id}",
+        "osv_data.zip",
+        quiet=False
     )
+    print("📂 Extracting osv_data.zip...")
+    with zipfile.ZipFile("osv_data.zip", "r") as z:
+        z.extractall("data/osv")
+    os.remove("osv_data.zip")
+    print("✅ OSV extracted!")
+
 
     # Now run conversion scripts (already on GitHub)
     print("🔄 Converting toml → json...")

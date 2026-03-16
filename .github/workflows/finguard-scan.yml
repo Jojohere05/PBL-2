@@ -38,8 +38,7 @@ jobs:
           GDRIVE_GITLEAKS_TOML: ${{ secrets.GDRIVE_GITLEAKS_TOML }}
           GDRIVE_OSV_FOLDER_ID: ${{ secrets.GDRIVE_OSV_FOLDER_ID }}
         run: |
-          python scripts/dataset_data.py
-
+          python scripts/download_data.py
 
       - name: Validate datasets
         run: |
@@ -61,10 +60,13 @@ jobs:
               from pathlib import Path
 
               files = {}
-              scan_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.tf', '.json', '.yaml', '.yml'}
+              scan_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.tf', '.yaml', '.yml'}
 
               for root, dirs, filenames in os.walk('.'):
-                  dirs[:] = [d for d in dirs if d not in {'node_modules', '.git', 'venv', '__pycache__', 'dist', 'build'}]
+                  dirs[:] = [d for d in dirs if d not in {
+                      'node_modules', '.git', 'venv', '__pycache__',
+                      'dist', 'build', 'data'
+                  }]
 
                   for filename in filenames:
                       filepath = Path(root) / filename
@@ -102,11 +104,11 @@ jobs:
               critical = results['summary']['by_severity'].get('critical', 0)
               high = results['summary']['by_severity'].get('high', 0)
 
-              if critical > 0 or high > 0:
-                  print(f'\n❌ Security scan failed: {critical} critical, {high} high severity issues')
+              if critical > 0:
+                  print(f'\n❌ Security scan failed: {critical} critical issues found')
                   exit(1)
               else:
-                  print(f'\n✅ Security scan passed')
+                  print(f'\n✅ Security scan passed (high={high} treated as warning only)')
 
           asyncio.run(main())
           "

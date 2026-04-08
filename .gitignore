@@ -114,8 +114,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Frontend build
-frontend/dist/
+# Frontend (current implementation is local-only)
+frontend/
 
 # IDE
 .idea/
@@ -142,3 +142,15 @@ temp/
 
 # Data directory (contains sensitive/large files)
 data/
+
+# Local outputs and reports (do not commit)
+test_results/
+reports/
+evaluation_summary.txt
+evaluation_table.csv
+
+# Model artifacts
+models/
+
+# Images
+*.png

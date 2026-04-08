@@ -80,3 +80,9 @@ async def websocket_scan(websocket: WebSocket, scan_id: str):
 def get_connection_manager() -> ConnectionManager:
     """Get the global connection manager instance"""
     return manager
+
+
+async def broadcast(message: dict):
+    """Broadcast a message to all active scan connections"""
+    for scan_id in list(manager.active_connections.keys()):
+        await manager.broadcast_to_scan(scan_id, message)

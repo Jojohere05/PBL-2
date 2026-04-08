@@ -60,6 +60,38 @@ def compute_risk(violations: list, context: dict) -> dict:
     if amplified:
         raw_score = int(raw_score * 1.3)
 
+    # Minimum score floors based on violation types
+    secrets = [
+        v for v in violations
+        if v.get("dimension") == "data_sensitivity_risk"
+    ]
+    criticals = [
+        v for v in violations
+        if v.get("adjusted_severity", v.get("severity", "")) == "CRITICAL"
+    ]
+    highs = [
+        v for v in violations
+        if v.get("adjusted_severity", v.get("severity", "")) == "HIGH"
+    ]
+
+    if secrets and raw_score < 31:
+        raw_score = 31  # any secret = at least WARN
+
+    if len(highs) >= 3 and raw_score < 56:
+        raw_score = 56  # 3+ HIGH violations = REVIEW
+
+    if criticals and raw_score < 56:
+        raw_score = 56  # any CRITICAL = at least REVIEW
+
+    critical_secrets = [
+        v for v in violations
+        if v.get("dimension") == "data_sensitivity_risk"
+        and v.get("adjusted_severity", v.get("severity", "")) == "CRITICAL"
+    ]
+
+    if critical_secrets and raw_score < 76:
+        raw_score = 76  # CRITICAL secret = BLOCK
+
     score = min(raw_score, 100)
 
     decision = "ALLOW"

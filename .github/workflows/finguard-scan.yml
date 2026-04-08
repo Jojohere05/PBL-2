@@ -5,148 +5,116 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
-  workflow_dispatch:
-    inputs:
-      repo_url:
-        description: 'Repository URL to scan'
-        required: false
-        type: string
+  workflow_dispatch: {}
 
 jobs:
   scan:
     runs-on: ubuntu-latest
 
+    env:
+      FINGUARD_API_URL: ${{ secrets.FINGUARD_API_URL }}
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-
-      - name: Install dependencies
+      - name: Zip repository (exclude heavy folders)
         run: |
-          pip install -r requirements.txt
+          zip -r repo.zip . \
+            -x "*.git*" "node_modules/*" "frontend/node_modules/*" "venv/*" "dist/*" "build/*" "__pycache__/*"
 
-      - name: Download private datasets
-        env:
-          GDRIVE_COMPLIANCE_ID: ${{ secrets.GDRIVE_COMPLIANCE_ID }}
-          GDRIVE_GITLEAKS_TOML: ${{ secrets.GDRIVE_GITLEAKS_TOML }}
-          GDRIVE_OSV_FOLDER_ID: ${{ secrets.GDRIVE_OSV_FOLDER_ID }}
+      - name: Call FinGuard backend API
+        id: call_api
         run: |
-          python scripts/dataset_data.py
+          if [ -z "${FINGUARD_API_URL}" ]; then
+            echo "FINGUARD_API_URL is not set. Configure it as a repository secret pointing to your FinGuard backend (e.g. https://your-app.railway.app)." >&2
+            exit 1
+          fi
 
-      - name: Validate datasets
-        run: |
-          python scripts/validate_datasets.py
+          echo "Calling FinGuard at ${FINGUARD_API_URL}/api/scan ..."
 
-      - name: Run security scan
-        id: scan
-        run: |
-          python -c "
-          import asyncio
-          import json
-          from api.adk_agents.orchestrator_agent import OrchestratorAgent
-          from api.risk_engine import calculate_risk_score, get_risk_level
+          resp=$(curl -sS -X POST "${FINGUARD_API_URL}/api/scan" \
+            -F "file=@repo.zip" \
+            -H "Accept: application/json")
 
-          async def main():
-              orchestrator = OrchestratorAgent()
+          echo "Raw response from FinGuard:" 
+          echo "$resp"
 
-              import os
-              from pathlib import Path
+          echo "$resp" > finguard-result.json
 
-              files = {}
-              scan_extensions = {'.py', '.js', '.ts', '.jsx', '.tsx', '.tf', '.yaml', '.yml'}
+          python - << 'PY'
+import json, sys
 
-              for root, dirs, filenames in os.walk('.'):
-                  dirs[:] = [d for d in dirs if d not in {
-                      'node_modules', '.git', 'venv', '__pycache__',
-                      'dist', 'build', 'data'
-                  }]
+try:
+    data = json.load(open('finguard-result.json', 'r', encoding='utf-8'))
+except Exception as e:
+    print(f"Failed to parse FinGuard JSON: {e}")
+    sys.exit(1)
 
-                  for filename in filenames:
-                      filepath = Path(root) / filename
-                      if filepath.suffix in scan_extensions:
-                          try:
-                              content = filepath.read_text(encoding='utf-8', errors='ignore')
-                              files[str(filepath)] = content
-                          except:
-                              pass
+decision = data.get('decision', 'ALLOW')
+score    = data.get('risk_score', 0)
+summary  = data.get('summary', {})
 
-              print(f'Scanning {len(files)} files...')
+print("\n=== FinGuard Decision ===")
+print(f"Decision : {decision}")
+print(f"Score    : {score}/100")
+print(f"Summary  : {json.dumps(summary, indent=2)}")
 
-              results = await orchestrator.scan_repository(files)
+blocked = decision.upper() == 'BLOCK'
+print(f"::set-output name=decision::{decision}")
+print(f"::set-output name=score::{score}")
+if blocked:
+    sys.exit(1)
+PY
 
-              risk_score = calculate_risk_score(results['findings'])
-              risk_level = get_risk_level(risk_score)
-
-              print(f'\n=== Scan Results ===')
-              print(f'Files scanned: {results[\"summary\"][\"scanned_files\"]}')
-              print(f'Total findings: {results[\"summary\"][\"total_findings\"]}')
-              print(f'Critical: {results[\"summary\"][\"by_severity\"].get(\"critical\", 0)}')
-              print(f'High: {results[\"summary\"][\"by_severity\"].get(\"high\", 0)}')
-              print(f'Medium: {results[\"summary\"][\"by_severity\"].get(\"medium\", 0)}')
-              print(f'Low: {results[\"summary\"][\"by_severity\"].get(\"low\", 0)}')
-              print(f'Risk Score: {risk_score}/100 ({risk_level})')
-
-              with open('scan-summary.json', 'w') as f:
-                  json.dump({
-                      'risk_score': risk_score,
-                      'risk_level': risk_level,
-                      'summary': results['summary'],
-                      'findings_count': len(results['findings'])
-                  }, f)
-
-              critical = results['summary']['by_severity'].get('critical', 0)
-              high = results['summary']['by_severity'].get('high', 0)
-
-              if critical > 0:
-                  print(f'\n❌ Security scan failed: {critical} critical issues found')
-                  exit(1)
-              else:
-                  print(f'\n✅ Security scan passed (high={high} treated as warning only)')
-
-          asyncio.run(main())
-          "
-
-      - name: Upload scan results
+      - name: Upload JSON result artifact
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: scan-results
-          path: scan-summary.json
+          name: finguard-result
+          path: finguard-result.json
 
-      - name: Comment on PR
+      - name: Comment on PR with summary
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
 
-            let summary;
+            let result;
             try {
-              summary = JSON.parse(fs.readFileSync('scan-summary.json', 'utf8'));
+              result = JSON.parse(fs.readFileSync('finguard-result.json', 'utf8'));
             } catch (e) {
-              summary = { risk_score: 'N/A', risk_level: 'unknown', summary: { by_severity: {} } };
+              core.warning(`Could not read finguard-result.json: ${e}`);
+              result = { risk_score: 'N/A', decision: 'unknown', summary: { by_severity: {} } };
             }
+
+            const bySev = result.summary?.by_severity || {};
 
             const body = `## 🔒 FinGuard Security Scan Results
 
             | Severity | Count |
             |----------|-------|
-            | 🔴 Critical | ${summary.summary.by_severity?.critical || 0} |
-            | 🟠 High | ${summary.summary.by_severity?.high || 0} |
-            | 🟡 Medium | ${summary.summary.by_severity?.medium || 0} |
-            | 🟢 Low | ${summary.summary.by_severity?.low || 0} |
+            | 🔴 Critical | ${bySev.CRITICAL || 0} |
+            | 🟠 High | ${bySev.HIGH || 0} |
+            | 🟡 Medium | ${bySev.MEDIUM || 0} |
+            | 🟢 Low | ${bySev.LOW || 0} |
 
-            **Risk Score:** ${summary.risk_score}/100 (${summary.risk_level})
+            **Risk Score:** ${result.risk_score}/100
+            **Decision:** ${result.decision}
+
+            
+            <details>
+            <summary>Raw JSON output</summary>
+
+            
+            
+            \`${JSON.stringify(result)}\`
+            
+            </details>
 
             ---
-            *Powered by FinGuard Security Scanner*`;
+            *Powered by FinGuard Compliance Scanner*`;
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
@@ -154,3 +122,19 @@ jobs:
               repo: context.repo.repo,
               body: body
             });
+
+      # Optional: send email on BLOCK decision using an SMTP-based action
+      # Configure secrets like MAIL_HOST, MAIL_PORT, MAIL_USERNAME, MAIL_PASSWORD, MAIL_TO before enabling.
+      # - name: Send email notification on BLOCK
+      #   if: steps.call_api.outputs.decision == 'BLOCK'
+      #   uses: dawidd6/action-send-mail@v3
+      #   with:
+      #     server_address: ${{ secrets.MAIL_HOST }}
+      #     server_port: ${{ secrets.MAIL_PORT }}
+      #     username: ${{ secrets.MAIL_USERNAME }}
+      #     password: ${{ secrets.MAIL_PASSWORD }}
+      #     subject: "FinGuard BLOCK decision for ${{ github.repository }}"
+      #     to: ${{ secrets.MAIL_TO }}
+      #     from: "FinGuard Bot <${{ secrets.MAIL_FROM }}>"
+      #     content_type: text/plain
+      #     body: "FinGuard decision: BLOCK (score ${{ steps.call_api.outputs.score }}/100). See finguard-result.json artifact for details."

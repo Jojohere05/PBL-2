@@ -145,3 +145,34 @@ FINDINGS
 def create_generator() -> PDFReportGenerator:
     """Factory function to create PDF generator"""
     return PDFReportGenerator()
+
+
+def generate_pdf_report(result: Dict[str, Any], output_path: str) -> str:
+    """Generate and save a PDF report from scan result payload."""
+    generator = create_generator()
+
+    summary = result.get("summary", {})
+    by_severity = summary.get("by_severity", {})
+
+    normalized_summary = {
+        "by_severity": {
+            "critical": by_severity.get("CRITICAL", by_severity.get("critical", 0)),
+            "high": by_severity.get("HIGH", by_severity.get("high", 0)),
+            "medium": by_severity.get("MEDIUM", by_severity.get("medium", 0)),
+            "low": by_severity.get("LOW", by_severity.get("low", 0)),
+        },
+        "total_findings": summary.get("total", summary.get("total_findings", 0)),
+        "risk_score": result.get("risk_score", summary.get("risk_score", 0)),
+    }
+
+    report_bytes = generator.generate_report(
+        scan_id=result.get("scan_id", "manual-scan"),
+        repo_name=result.get("repo", "uploaded-repository"),
+        findings=result.get("violations", []),
+        summary=normalized_summary,
+    )
+
+    with open(output_path, "wb") as f:
+        f.write(report_bytes)
+
+    return output_path

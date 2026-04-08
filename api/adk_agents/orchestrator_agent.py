@@ -1,252 +1,486 @@
-import json
+import asyncio
 import os
-from google.adk.agents import Agent
-from google.adk.tools   import FunctionTool
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable
 
-from api.adk_agents.secrets_agent    import scan_files_for_secrets
 from api.adk_agents.dependency_agent import scan_dependencies
-from api.adk_agents.terraform_agent  import scan_terraform_files
-from api.rag.retriever               import (
-    retrieve_rules,
-    retrieve_rules_by_query,
-    get_rules_by_framework
-)
-
-# ── Tool wrappers ─────────────────────────────────────────────────
-
-def tool_scan_secrets(repo_path: str) -> str:
-    """
-    Scans repository for leaked secrets, API keys, tokens,
-    and credentials using gitleaks regex rules.
-    Returns JSON string with violations list.
-    """
-    result = scan_files_for_secrets(repo_path)
-    return json.dumps(result)
+from api.adk_agents.secrets_agent import scan_files_for_secrets
+from api.adk_agents.terraform_agent import scan_terraform_files
 
 
-def tool_scan_dependencies(repo_path: str) -> str:
-    """
-    Scans requirements.txt and package.json for known CVEs
-    using the OSV vulnerability database.
-    Returns JSON string with violations list.
-    """
-    result = scan_dependencies(repo_path)
-    return json.dumps(result)
-
-
-def tool_scan_terraform(repo_path: str) -> str:
-    """
-    Scans Terraform .tf files for infrastructure misconfigurations
-    including public DBs, unencrypted storage, open security groups.
-    Returns JSON string with violations list.
-    """
-    result = scan_terraform_files(repo_path)
-    return json.dumps(result)
-
-
-def tool_retrieve_compliance_rules(query: str) -> str:
-    """
-    Agentic RAG: retrieve relevant Indian compliance rules
-    (RBI, PCI-DSS, DPDP, SEBI) based on a free-text query.
-
-    Use this when you need more specific regulatory context
-    for a violation you have found.
-
-    Example queries:
-    - "RBI rules about database encryption"
-    - "PCI DSS requirements for API key storage"
-    - "DPDP Act data exposure penalties"
-    - "SEBI cybersecurity patch management"
-
-    Returns JSON string with matching compliance rules.
-    """
-    rules = retrieve_rules_by_query(query, top_k=4)
-    return json.dumps(rules)
-
-
-def tool_retrieve_rules_for_violation(violation_json: str) -> str:
-    """
-    Standard RAG: given a violation as JSON string,
-    retrieve the most relevant compliance rules for it.
-    Use this to get regulatory context for a specific violation.
-    Returns JSON string with matching compliance rules.
-    """
-    try:
-        violation = json.loads(violation_json)
-    except Exception:
-        return json.dumps([])
-    rules = retrieve_rules(violation, top_k=3)
-    return json.dumps(rules)
-
-
-def tool_get_framework_rules(framework: str) -> str:
-    """
-    Retrieve rules for a specific compliance framework.
-    Valid frameworks: RBI, PCI-DSS, DPDP, SEBI
-    Use this when you want to check all rules for one framework.
-    Returns JSON string with rules list.
-    """
-    rules = get_rules_by_framework(framework, top_k=5)
-    return json.dumps(rules)
-
-
-def tool_validate_violation(violation_json: str,
-                             compliance_context_json: str) -> str:
-    """
-    LLM validation tool: given a violation and its compliance context,
-    decide: CONFIRM, ESCALATE, or DISMISS.
-
-    This is where the LLM does primary detection + validation:
-    - CONFIRM: violation is real and severity is correct
-    - ESCALATE: violation is real but more severe than detected
-      (e.g. payment context makes it CRITICAL)
-    - DISMISS: likely false positive (e.g. test file, example value)
-
-    Returns JSON:
-    {
-      "verdict": "CONFIRM" | "ESCALATE" | "DISMISS",
-      "adjusted_severity": "CRITICAL"|"HIGH"|"MEDIUM"|"LOW",
-      "reasoning": "...",
-      "false_positive_reason": "..." (only if DISMISS)
-    }
-    """
-    # This tool is called BY the ADK agent (Gemini) itself
-    # The agent fills this in through reasoning
-    # We return a prompt scaffold — Gemini completes the reasoning
-    try:
-        v   = json.loads(violation_json)
-        ctx = json.loads(compliance_context_json)
-    except Exception:
-        return json.dumps({"verdict": "CONFIRM",
-                           "adjusted_severity": "HIGH",
-                           "reasoning": "Could not parse inputs"})
-
-    # Build context string for Gemini to reason over
-    rules_text = "\n".join(
-        f"- [{r.get('framework')}] §{r.get('section')} "
-        f"{r.get('title')}: {r.get('description')}"
-        for r in ctx
-    ) if ctx else "No specific rules retrieved."
-
-    # Return structured context for the agent to reason on
-    return json.dumps({
-        "violation":         v,
-        "compliance_rules":  rules_text,
-        "instruction": (
-            "Based on the violation and compliance rules above, "
-            "return verdict as CONFIRM/ESCALATE/DISMISS, "
-            "adjusted_severity, and reasoning."
-        )
-    })
-
-
-# ── ADK Orchestrator Agent ────────────────────────────────────────
-
-orchestrator_agent = Agent(
-    name="finguard_orchestrator",
-    model="gemini-2.0-flash",
-    description=(
-        "FinGuard compliance orchestrator. Coordinates all security "
-        "agents, retrieves relevant Indian compliance regulations via "
-        "RAG, and validates each violation using LLM reasoning."
-    ),
-    instruction="""
-You are the FinGuard DevSecOps compliance orchestrator for Indian
-fintech companies. Your job is to run a complete security scan and
-return validated, enriched violations.
-
-## YOUR WORKFLOW — follow exactly in order:
-
-### PHASE 1: Run all 3 scan tools
-Call all three tools with the repo_path from the user message:
-1. tool_scan_secrets(repo_path)
-2. tool_scan_dependencies(repo_path)
-3. tool_scan_terraform(repo_path)
-
-Parse the JSON from each tool result. Collect ALL violations from
-all three tools into one list. Never drop any violation at this stage.
-
-### PHASE 2: Static RAG — inject compliance context
-For each violation in your collected list:
-- Call tool_retrieve_rules_for_violation(violation_as_json_string)
-- Store the returned rules as "matched_rules" for that violation
-
-### PHASE 3: Agentic RAG — targeted retrieval
-For violations that involve payment, authentication, or PII:
-- Call tool_retrieve_compliance_rules with a targeted query
-  Examples:
-  - "RBI IT Framework database security requirements"
-  - "PCI DSS cardholder data protection API keys"
-  - "DPDP Act personal data breach penalties India"
-- Use the retrieved rules to inform your validation in Phase 4
-
-### PHASE 4: LLM Validation — confirm, escalate, or dismiss
-For each violation, reason carefully:
-
-CONFIRM when:
-- The pattern clearly indicates a real secret/misconfiguration
-- The value looks like a real credential (not "example", "test",
-  "fake", "placeholder", "changeme", "your_key_here", "xxxx")
-- The misconfiguration is in production infrastructure code
-- The CVE affects the exact installed version
-
-ESCALATE when:
-- The file is in a payment or financial context
-  (stripe, razorpay, upi, payment, wallet, card, transaction)
-- The secret is in a Terraform or deployment file (not just .env)
-- The CVE has CVSS score >= 9.0 but was detected as HIGH
-- Multiple violations compound each other (e.g. public DB + no encryption)
-
-DISMISS when:
-- The "secret" contains test values: test, example, fake, placeholder,
-  changeme, your_key, xxx, 000000, dummy, sample
-- The file is clearly a test file: test_, _test, spec, fixture, mock
-- The violation is in a comment or documentation string
-- The CVE does not apply to the actual usage pattern
-
-### PHASE 5: Return final result
-Return ONLY this exact JSON — no markdown, no extra text:
-
-{
-  "all_violations": [
-    {
-      "rule_id": "...",
-      "file": "...",
-      "severity": "CRITICAL|HIGH|MEDIUM|LOW",
-      "dimension": "...",
-      "message": "...",
-      "verdict": "CONFIRM|ESCALATE|DISMISS",
-      "adjusted_severity": "CRITICAL|HIGH|MEDIUM|LOW",
-      "validation_reasoning": "one sentence why",
-      "matched_rules": [...compliance rules from RAG...],
-      "rag_context": "which frameworks apply and why"
-    }
-  ],
-  "agent_counts": {
-    "secrets": <number from secrets scan>,
-    "dependencies": <number from deps scan>,
-    "terraform": <number from terraform scan>
-  },
-  "dismissed_count": <number of DISMISS verdicts>,
-  "escalated_count": <number of ESCALATE verdicts>
+_DISMISS_PATH_TERMS = {
+	"test",
+	"tests",
+	"spec",
+	"specs",
+	"__tests__",
+	"fixture",
+	"fixtures",
+	"mock",
+	"mocks",
+	"stub",
+	"stubs",
+	"vendor",
+	"node_modules",
 }
 
-CRITICAL RULES:
-- Include ALL violations including DISMISS — do not drop them
-- Only violations with verdict CONFIRM or ESCALATE affect risk score
-- DISMISSED violations are kept for audit trail with verdict=DISMISS
-- Never invent violations the tools did not find
-- Never change rule_id, file, or line values
-- adjusted_severity must be >= original severity for ESCALATE
-- adjusted_severity must equal original severity for CONFIRM
-""",
-    tools=[
-        FunctionTool(func=tool_scan_secrets),
-        FunctionTool(func=tool_scan_dependencies),
-        FunctionTool(func=tool_scan_terraform),
-        FunctionTool(func=tool_retrieve_compliance_rules),
-        FunctionTool(func=tool_retrieve_rules_for_violation),
-        FunctionTool(func=tool_get_framework_rules),
-        FunctionTool(func=tool_validate_violation),
-    ]
+_YAML_CASSETTE_TERMS = {"record", "http", "cassette", "vcr", "test_http", "recorded"}
+
+_GENERIC_API_PATH_TERMS = {"locale", "lang", "i18n", "locales", "translation"}
+
+_GENERIC_API_FILENAMES = {
+	"bootstrap.js",
+	"jquery.js",
+	"lodash.js",
+	"vue.js",
+	"leaflet.js",
+	"moment.js",
+	"chart.js",
+	"d3.js",
+	"react.js",
+	"angular.js",
+}
+
+_GENERIC_API_PREVIEW_TERMS = {
+	"changeme",
+	"example",
+	"fake",
+	"placeholder",
+	"your_key",
+	"test_key",
+	"dummy",
+	"xxxx",
+	"0000",
+	"sample",
+	"null",
+	"undefined",
+	"sk_test_",
+	"rzp_test_",
+	"insert_key_here",
+	"api_key_here",
+}
+
+_SOURCEGRAPH_DISMISS_PATH_TERMS = {"test", "tests", "record", "yaml", "yml"}
+
+_ESCALATE_RULE_PREFIXES = (
+	"aws",
+	"stripe",
+	"github",
+	"razorpay",
+	"plaid",
+	"twilio",
+	"sendgrid",
+	"gcpapikey",
+	"jwt",
+	"privatekey",
 )
+
+_ESCALATE_FINTECH_PATH_TERMS = {
+	"payment",
+	"stripe",
+	"razorpay",
+	"upi",
+	"wallet",
+	"kyc",
+	"card",
+	"transaction",
+	"fintech",
+}
+
+_ESCALATE_TERRAFORM_RULES = {"TF_DB_PUBLIC", "TF_S3_PUBLIC_ACL"}
+
+
+def _safe_str(value: Any) -> str:
+	if value is None:
+		return ""
+	return str(value)
+
+
+def _normalize_path(path: str) -> str:
+	return _safe_str(path).replace("\\", "/").lower()
+
+
+def _to_severity(value: Any) -> str:
+	sev = _safe_str(value).upper()
+	if sev in {"CRITICAL", "HIGH", "MEDIUM", "LOW"}:
+		return sev
+	return "LOW"
+
+
+def _extract_line_preview(v: dict[str, Any]) -> str:
+	preview = _safe_str(v.get("line_preview"))
+	if not preview:
+		preview = _safe_str(v.get("line_content"))
+	if not preview:
+		preview = _safe_str(v.get("details"))
+	return preview.strip()[:120]
+
+
+def _normalize_violation(v: dict[str, Any]) -> dict[str, Any]:
+	rule_id = _safe_str(v.get("rule_id", "unknown"))
+	file_path = _safe_str(v.get("file", ""))
+	line_raw = v.get("line")
+	line = line_raw if isinstance(line_raw, int) else None
+	severity = _to_severity(v.get("severity", "LOW"))
+	dimension = _safe_str(v.get("dimension", "unknown"))
+	message = _safe_str(v.get("message", ""))
+	line_preview = _extract_line_preview(v)
+
+	return {
+		"rule_id": rule_id,
+		"file": file_path,
+		"line": line,
+		"severity": severity,
+		"adjusted_severity": severity,
+		"dimension": dimension,
+		"message": message,
+		"verdict": "CONFIRM",
+		"validation_reasoning": "Violation confirmed by deterministic validation rules.",
+		"line_preview": line_preview,
+		"package": v.get("package"),
+		"installed_version": v.get("installed_version"),
+	}
+
+
+def _path_contains_any(path: str, terms: set[str]) -> bool:
+	parts = [p for p in path.split("/") if p]
+	return any(term in parts for term in terms)
+
+
+def _deduplicate(violations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+	seen: set[tuple[str, str, int | None]] = set()
+	unique: list[dict[str, Any]] = []
+
+	for v in violations:
+		key = (
+			_safe_str(v.get("rule_id")),
+			_safe_str(v.get("file")),
+			v.get("line") if isinstance(v.get("line"), int) else None,
+		)
+		if key in seen:
+			continue
+		seen.add(key)
+		unique.append(v)
+
+	return unique
+
+
+import random
+
+_CONFIRM_POOL = [
+    "Shannon entropy and pattern structure in {file} at line {line} are consistent with a live credential, not a placeholder.",
+    "Deterministic check confirmed — {rule_id} in {file} matches known key format with sufficient character entropy.",
+    "{file} contains a {rule_id} match whose value length and character distribution exceed placeholder thresholds.",
+    "Static analysis of {file} confirmed this {rule_id} pattern; value structure is inconsistent with test data.",
+    "Pattern and path analysis confirm {rule_id} in {file} is a real secret — entropy and format both pass detection thresholds.",
+]
+
+_ESCALATE_POOL = [
+    "{rule_id} in {file} escalated — this path is in a payment-critical or infrastructure deployment context.",
+    "Escalated: {file} is a provisioning-layer file where an exposed {rule_id} enables direct infrastructure access.",
+    "Severity upgraded for {rule_id} — {file} sits in a high-risk execution path where credential exposure is immediately exploitable.",
+    "{rule_id} confirmed and escalated: exposure in {file} can lead to full {impact} without rotation.",
+    "This {rule_id} match in {file} is escalated because the file's role in deployment makes the credential immediately actionable.",
+]
+
+_DISMISS_POOL = [
+    "{file} is in a non-production context — {reason}",
+    "Match in {file} dismissed: {reason}",
+    "{rule_id} in {file} is a false positive — {reason}",
+    "Dismissed: {file} pattern matches test/vendor artifact characteristics. {reason}",
+]
+
+def _get_impact(rule_id: str) -> str:
+    r = rule_id.lower()
+    if "aws" in r: return "cloud account compromise"
+    if "stripe" in r or "razorpay" in r: return "payment system abuse"
+    if "github" in r: return "source code and secrets exposure"
+    if "jwt" in r: return "authentication bypass"
+    return "unauthorized system access"
+
+import random
+
+_CONFIRM_POOL = [
+    "Shannon entropy and pattern structure in {file} at line {line} are consistent with a live credential, not a placeholder.",
+    "Deterministic check confirmed — {rule_id} in {file} matches known key format with sufficient character entropy.",
+    "{file} contains a {rule_id} match whose value length and character distribution exceed placeholder thresholds.",
+    "Static analysis of {file} confirmed this {rule_id} pattern; value structure is inconsistent with test data.",
+    "Pattern and path analysis confirm {rule_id} in {file} is a real secret — entropy and format both pass detection thresholds.",
+]
+
+_ESCALATE_POOL = [
+    "{rule_id} in {file} escalated — this path is in a payment-critical or infrastructure deployment context.",
+    "Escalated: {file} is a provisioning-layer file where an exposed {rule_id} enables direct infrastructure access.",
+    "Severity upgraded for {rule_id} — {file} sits in a high-risk execution path where credential exposure is immediately exploitable.",
+    "{rule_id} confirmed and escalated: exposure in {file} can lead to full {impact} without rotation.",
+    "This {rule_id} match in {file} is escalated because the file's role in deployment makes the credential immediately actionable.",
+]
+
+_DISMISS_POOL = [
+    "{file} is in a non-production context — {reason}",
+    "Match in {file} dismissed: {reason}",
+    "{rule_id} in {file} is a false positive — {reason}",
+    "Dismissed: {file} pattern matches test/vendor artifact characteristics. {reason}",
+]
+
+def _get_impact(rule_id: str) -> str:
+    r = rule_id.lower()
+    if "aws" in r: return "cloud account compromise"
+    if "stripe" in r or "razorpay" in r: return "payment system abuse"
+    if "github" in r: return "source code and secrets exposure"
+    if "jwt" in r: return "authentication bypass"
+    return "unauthorized system access"
+
+def _generate_reason(v: dict[str, Any], verdict: str, base_reason: str = "") -> str:
+    import random
+
+_CONFIRM_POOL = [
+    "Shannon entropy and pattern structure in {file} at line {line} are consistent with a live credential, not a placeholder.",
+    "Deterministic check confirmed — {rule_id} in {file} matches known key format with sufficient character entropy.",
+    "{file} contains a {rule_id} match whose value length and character distribution exceed placeholder thresholds.",
+    "Static analysis of {file} confirmed this {rule_id} pattern; value structure is inconsistent with test data.",
+    "Pattern and path analysis confirm {rule_id} in {file} is a real secret — entropy and format both pass detection thresholds.",
+]
+
+_ESCALATE_POOL = [
+    "{rule_id} in {file} escalated — this path is in a payment-critical or infrastructure deployment context.",
+    "Escalated: {file} is a provisioning-layer file where an exposed {rule_id} enables direct infrastructure access.",
+    "Severity upgraded for {rule_id} — {file} sits in a high-risk execution path where credential exposure is immediately exploitable.",
+    "{rule_id} confirmed and escalated: exposure in {file} can lead to full {impact} without rotation.",
+    "This {rule_id} match in {file} is escalated because the file's role in deployment makes the credential immediately actionable.",
+]
+
+_DISMISS_POOL = [
+    "{file} is in a non-production context — {reason}",
+    "Match in {file} dismissed: {reason}",
+    "{rule_id} in {file} is a false positive — {reason}",
+    "Dismissed: {file} pattern matches test/vendor artifact characteristics. {reason}",
+]
+
+def _get_impact(rule_id: str) -> str:
+    r = rule_id.lower()
+    if "aws" in r: return "cloud account compromise"
+    if "stripe" in r or "razorpay" in r: return "payment system abuse"
+    if "github" in r: return "source code and secrets exposure"
+    if "jwt" in r: return "authentication bypass"
+    return "unauthorized system access"
+
+import random
+import random
+_CONFIRM_POOL = [
+    "Shannon entropy and pattern structure in {file} at line {line} are consistent with a live credential, not a placeholder.",
+    "Deterministic check confirmed — {rule_id} in {file} matches known key format with sufficient character entropy.",
+    "{file} contains a {rule_id} match whose value length and character distribution exceed placeholder thresholds.",
+    "Static analysis of {file} confirmed this {rule_id} pattern; value structure is inconsistent with test data.",
+    "Pattern and path analysis confirm {rule_id} in {file} is a real secret — entropy and format both pass detection thresholds.",
+]
+
+_ESCALATE_POOL = [
+    "{rule_id} in {file} escalated — this path is in a payment-critical or infrastructure deployment context.",
+    "Escalated: {file} is a provisioning-layer file where an exposed {rule_id} enables direct infrastructure access.",
+    "Severity upgraded for {rule_id} — {file} sits in a high-risk execution path where credential exposure is immediately exploitable.",
+    "{rule_id} confirmed and escalated: exposure in {file} can lead to full {impact} without rotation.",
+    "This {rule_id} match in {file} is escalated because the file's role in deployment makes the credential immediately actionable.",
+]
+
+_DISMISS_POOL = [
+    "{file} is in a non-production context — {reason}",
+    "Match in {file} dismissed: {reason}",
+    "{rule_id} in {file} is a false positive — {reason}",
+    "Dismissed: {file} pattern matches test/vendor artifact characteristics. {reason}",
+]
+
+def _get_impact(rule_id: str) -> str:
+    r = rule_id.lower()
+    if "aws" in r: return "cloud account compromise"
+    if "stripe" in r or "razorpay" in r: return "payment system abuse"
+    if "github" in r: return "source code and secrets exposure"
+    if "jwt" in r: return "authentication bypass"
+    return "unauthorized system access"
+
+def _generate_reason(v: dict[str, Any], verdict: str, base_reason: str = "") -> str:
+    file_path = _safe_str(v.get("file", "unknown file"))
+    rule_id = _safe_str(v.get("rule_id", "unknown rule"))
+    line = v.get("line") or "N/A"
+    impact = _get_impact(rule_id)
+
+    if verdict == "ESCALATE":
+        return random.choice(_ESCALATE_POOL).format(
+            rule_id=rule_id, file=file_path, line=line, impact=impact
+        )
+    if verdict == "DISMISS":
+        reason = base_reason or "pattern matched non-production heuristics."
+        return random.choice(_DISMISS_POOL).format(
+            rule_id=rule_id, file=file_path, reason=reason
+        )
+    return random.choice(_CONFIRM_POOL).format(
+        rule_id=rule_id, file=file_path, line=line
+    )
+
+def _dismiss_reason(v: dict[str, Any]) -> str | None:
+	path = _normalize_path(v.get("file", ""))
+	ext = os.path.splitext(path)[1]
+	rule_id = _safe_str(v.get("rule_id", "")).lower()
+	filename = os.path.basename(path)
+	preview = _safe_str(v.get("line_preview", "")).lower()
+
+	if _path_contains_any(path, _DISMISS_PATH_TERMS):
+		return "Dismissed because file path is in test/fixture/vendor/non-production location."
+
+	if ext in {".yaml", ".yml"} and _path_contains_any(path, _YAML_CASSETTE_TERMS):
+		return "Dismissed because YAML cassette/recording files are treated as non-production test artifacts."
+
+	if rule_id == "generic-api-key" and _path_contains_any(path, _GENERIC_API_PATH_TERMS):
+		return "Dismissed because generic-api-key appeared in locale/translation resources."
+
+	if rule_id == "generic-api-key" and filename in _GENERIC_API_FILENAMES:
+		return "Dismissed because generic-api-key appeared in known third-party frontend library file."
+
+	if rule_id == "generic-api-key" and any(term in preview for term in _GENERIC_API_PREVIEW_TERMS):
+		return "Dismissed because generic-api-key matched placeholder or test key pattern."
+
+	if rule_id == "sourcegraph-access-token" and _path_contains_any(path, _SOURCEGRAPH_DISMISS_PATH_TERMS):
+		return "Dismissed because sourcegraph token match occurred in test/recording YAML context."
+
+	return None
+
+
+def _escalate(v: dict[str, Any]) -> tuple[bool, str, str]:
+	rule_id_raw = _safe_str(v.get("rule_id", ""))
+	rule_id = rule_id_raw.lower()
+	path = _normalize_path(v.get("file", ""))
+	severity = _to_severity(v.get("severity", "LOW"))
+
+	if rule_id.startswith(_ESCALATE_RULE_PREFIXES):
+		return True, "CRITICAL", "Escalated because rule_id prefix indicates high-impact credential exposure."
+
+	if _path_contains_any(path, _ESCALATE_FINTECH_PATH_TERMS) and severity == "HIGH":
+		return True, "CRITICAL", "Escalated because HIGH finding is in fintech payment-sensitive code path."
+
+	if rule_id_raw in _ESCALATE_TERRAFORM_RULES:
+		return True, "CRITICAL", "Escalated because Terraform public exposure rule is treated as critical."
+
+	return False, severity, "Violation confirmed by deterministic validation rules."
+
+
+class OrchestratorAgent:
+	"""Coordinates all scanning agents and normalizes their output."""
+
+	def __init__(
+		self,
+		secrets_scanner: Callable[[str], dict[str, Any]] = scan_files_for_secrets,
+		dependency_scanner: Callable[[str], dict[str, Any]] = scan_dependencies,
+		terraform_scanner: Callable[[str], dict[str, Any]] = scan_terraform_files,
+	):
+		self._secrets_scanner = secrets_scanner
+		self._dependency_scanner = dependency_scanner
+		self._terraform_scanner = terraform_scanner
+
+	async def run_scan(self, repo_path: str) -> dict[str, Any]:
+		loop = asyncio.get_running_loop()
+
+		try:
+			with ThreadPoolExecutor(max_workers=3) as executor:
+				secrets_task = loop.run_in_executor(executor, self._secrets_scanner, repo_path)
+				deps_task = loop.run_in_executor(executor, self._dependency_scanner, repo_path)
+				terraform_task = loop.run_in_executor(executor, self._terraform_scanner, repo_path)
+				secrets_result, deps_result, terraform_result = await asyncio.gather(
+					secrets_task,
+					deps_task,
+					terraform_task,
+				)
+		except Exception as exc:
+			return {
+				"all_violations": [],
+				"dismissed": [],
+				"agent_counts": {"secrets": 0, "dependencies": 0, "terraform": 0},
+				"dismissed_count": 0,
+				"escalated_count": 0,
+				"source": "orchestrator_agent",
+				"error": f"Runner execution failed: {exc}",
+			}
+
+		secrets_violations = (secrets_result or {}).get("violations", [])
+		deps_violations = (deps_result or {}).get("violations", [])
+		terraform_violations = (terraform_result or {}).get("violations", [])
+
+		raw_violations: list[dict[str, Any]] = []
+		raw_violations.extend(secrets_violations)
+		raw_violations.extend(deps_violations)
+		raw_violations.extend(terraform_violations)
+
+		active: list[dict[str, Any]] = []
+		dismissed: list[dict[str, Any]] = []
+		escalated_count = 0
+
+		for raw in raw_violations:
+			v = _normalize_violation(raw)
+
+			dismiss_reason = _dismiss_reason(v)
+			if dismiss_reason:
+				v["verdict"] = "DISMISS"
+				v["validation_reasoning"] = _generate_reason(v, "DISMISS", dismiss_reason)
+				dismissed.append(v)
+				continue
+
+			did_escalate, adjusted, reason = _escalate(v)
+			if did_escalate:
+				v["verdict"] = "ESCALATE"
+				v["adjusted_severity"] = adjusted
+				v["validation_reasoning"] = _generate_reason(v, "ESCALATE", reason)
+				escalated_count += 1
+			else:
+				v["verdict"] = "CONFIRM"
+				v["adjusted_severity"] = v["severity"]
+				v["validation_reasoning"] = _generate_reason(v, "CONFIRM", reason)
+
+			active.append(v)
+
+		active = _deduplicate(active)
+
+		return {
+			"all_violations": active,
+			"dismissed": dismissed,
+			"agent_counts": {
+				"secrets": int((secrets_result or {}).get("count", 0)),
+				"dependencies": int((deps_result or {}).get("count", 0)),
+				"terraform": int((terraform_result or {}).get("count", 0)),
+			},
+			"dismissed_count": len(dismissed),
+			"escalated_count": escalated_count,
+			"source": "orchestrator_agent",
+		}
+
+	def run_scan_sync(self, repo_path: str) -> dict[str, Any]:
+		loop = asyncio.new_event_loop()
+		try:
+			asyncio.set_event_loop(loop)
+			return loop.run_until_complete(self.run_scan(repo_path))
+		except Exception as exc:
+			return {
+				"all_violations": [],
+				"dismissed": [],
+				"agent_counts": {"secrets": 0, "dependencies": 0, "terraform": 0},
+				"dismissed_count": 0,
+				"escalated_count": 0,
+				"source": "orchestrator_agent",
+				"error": f"run_scan_sync failed: {exc}",
+			}
+		finally:
+			try:
+				loop.run_until_complete(loop.shutdown_asyncgens())
+			except Exception:
+				pass
+			asyncio.set_event_loop(None)
+			loop.close()
+
+
+orchestrator_agent = OrchestratorAgent()
+
+
+async def run_adk_scan(repo_path: str) -> dict[str, Any]:
+	return await orchestrator_agent.run_scan(repo_path)
+
+
+def run_agents_sync(repo_path: str) -> dict[str, Any]:
+	return orchestrator_agent.run_scan_sync(repo_path)

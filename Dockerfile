@@ -1,29 +1,15 @@
-# FinGuard API Dockerfile
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    libpq-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for better caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
-COPY api/ ./api/
-COPY data/ ./data/
-COPY scripts/ ./scripts/
+COPY . .
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
+RUN mkdir -p data/rules data/gitleaks data/osv \
+    data/feedback reports test_results
 
-# Expose port
 EXPOSE 8000
 
-# Run the application
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]

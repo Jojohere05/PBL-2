@@ -6,26 +6,37 @@ SKIP_DIRS = {".git"}
 
 def _extract_blocks(content: str) -> list:
     results = []
+
+    # Match BOTH resource and module blocks
     for m in re.finditer(
-        r'resource\s+"([^"]+)"\s+"([^"]+)"\s*\{', content
+        r'(resource|module)\s+"([^"]+)"(?:\s+"([^"]+)")?\s*\{',
+        content
     ):
-        rtype, rname = m.group(1), m.group(2)
+        block_type = m.group(1)
+        name1 = m.group(2)
+        name2 = m.group(3) or ""
+
+        if block_type == "resource":
+            rtype, rname = name1, name2
+        else:
+            rtype, rname = "module", name1
+
         start, depth, i = m.end(), 1, m.end()
+
         while i < len(content) and depth > 0:
-            if content[i] == "{":   depth += 1
-            elif content[i] == "}": depth -= 1
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
             i += 1
+
         results.append((rtype, rname, content[start:i - 1]))
+
     return results
 
-
 def scan_terraform_files(repo_path: str) -> dict:
-    """
-    Scans .tf files for infrastructure misconfigurations.
-    Returns raw violations — no LLM, no decisions.
-    """
     violations = []
-    tf_files   = []
+    tf_files = []
 
     for root, dirs, files in os.walk(repo_path):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
@@ -43,80 +54,113 @@ def scan_terraform_files(repo_path: str) -> dict:
         for rtype, rname, body in _extract_blocks(content):
             res = f"{rtype}.{rname}"
 
-            checks = [
-                (r'publicly_accessible\s*=\s*true',
-                 "TF_DB_PUBLIC", "CRITICAL",
-                 "Database is publicly accessible",
-                 "infrastructure_risk"),
-                (r'storage_encrypted\s*=\s*false',
-                 "TF_STORAGE_UNENCRYPTED", "HIGH",
-                 "Storage encryption disabled",
-                 "infrastructure_risk"),
-                (r'encrypt_at_rest\s*=\s*false',
-                 "TF_ENCRYPT_AT_REST_DISABLED", "HIGH",
-                 "Encrypt-at-rest disabled",
-                 "infrastructure_risk"),
-            ]
-            for pattern, rule_id, sev, msg, dim in checks:
-                if re.search(pattern, body):
+            # -------------------------
+            # STRICT MISCONFIGS
+            # -------------------------
+            if re.search(r'publicly_accessible\s*=\s*true', body):
+                violations.append({
+                    "rule_id": "TF_DB_PUBLIC",
+                    "file": rel,
+                    "resource": res,
+                    "severity": "CRITICAL",
+                    "message": "Database is publicly accessible",
+                    "dimension": "infrastructure_risk"
+                })
+
+            if re.search(r'storage_encrypted\s*=\s*false', body):
+                violations.append({
+                    "rule_id": "TF_STORAGE_UNENCRYPTED",
+                    "file": rel,
+                    "resource": res,
+                    "severity": "HIGH",
+                    "message": "Storage encryption disabled",
+                    "dimension": "infrastructure_risk"
+                })
+            
+            # -------------------------
+            # MISSING CONFIG DETECTION (🔥 IMPORTANT)
+            # -------------------------
+            if rtype == "aws_db_instance":
+                if "storage_encrypted" not in body:
                     violations.append({
-                        "rule_id": rule_id, "file": rel,
-                        "resource": res, "severity": sev,
-                        "message": msg, "dimension": dim
+                        "rule_id": "TF_RDS_ENCRYPTION_NOT_DEFINED",
+                        "file": rel,
+                        "resource": res,
+                        "severity": "MEDIUM",
+                        "message": "RDS encryption not explicitly defined",
+                        "dimension": "infrastructure_risk"
                     })
 
             if "s3_bucket" in rtype:
+                if "block_public_acls" not in body:
+                    violations.append({
+                        "rule_id": "TF_S3_PUBLIC_BLOCK_NOT_DEFINED",
+                        "file": rel,
+                        "resource": res,
+                        "severity": "MEDIUM",
+                        "message": "S3 public access block not configured",
+                        "dimension": "infrastructure_risk"
+                    })
+
                 if re.search(r'acl\s*=\s*"public-read', body):
                     violations.append({
-                        "rule_id": "TF_S3_PUBLIC_ACL", "file": rel,
-                        "resource": res, "severity": "CRITICAL",
+                        "rule_id": "TF_S3_PUBLIC_ACL",
+                        "file": rel,
+                        "resource": res,
+                        "severity": "CRITICAL",
                         "message": "S3 bucket public-read ACL",
                         "dimension": "infrastructure_risk"
                     })
-                if re.search(r'block_public_acls\s*=\s*false', body):
-                    violations.append({
-                        "rule_id": "TF_S3_PUBLIC_BLOCK_DISABLED",
-                        "file": rel, "resource": res,
-                        "severity": "HIGH",
-                        "message": "S3 public access block disabled",
-                        "dimension": "infrastructure_risk"
-                    })
 
+            # -------------------------
+            # SECURITY GROUP (IMPROVED)
+            # -------------------------
             if "security_group" in rtype:
-                if re.search(
-                    r'cidr_blocks\s*=\s*\[.*"0\.0\.0\.0/0"', body
-                ):
-                    violations.append({
-                        "rule_id": "TF_SG_OPEN_INGRESS", "file": rel,
-                        "resource": res, "severity": "HIGH",
-                        "message": "Security group allows 0.0.0.0/0",
-                        "dimension": "infrastructure_risk"
-                    })
+                if "cidr_blocks" in body:
+                    if "0.0.0.0/0" in body:
+                        violations.append({
+                            "rule_id": "TF_SG_OPEN_INGRESS",
+                            "file": rel,
+                            "resource": res,
+                            "severity": "HIGH",
+                            "message": "Security group allows 0.0.0.0/0",
+                            "dimension": "infrastructure_risk"
+                        })
+                    else:
+                        # 🔥 NEW: variable-based detection
+                        violations.append({
+                            "rule_id": "TF_SG_DYNAMIC_CIDR",
+                            "file": rel,
+                            "resource": res,
+                            "severity": "LOW",
+                            "message": "Security group uses dynamic CIDR — review required",
+                            "dimension": "infrastructure_risk"
+                        })
 
+            # -------------------------
+            # EBS
+            # -------------------------
             if rtype == "aws_ebs_volume":
-                if not re.search(r'encrypted\s*=\s*true', body):
+                if "encrypted" not in body:
                     violations.append({
-                        "rule_id": "TF_EBS_NOT_ENCRYPTED", "file": rel,
-                        "resource": res, "severity": "HIGH",
-                        "message": "EBS volume missing encryption",
+                        "rule_id": "TF_EBS_ENCRYPTION_NOT_DEFINED",
+                        "file": rel,
+                        "resource": res,
+                        "severity": "MEDIUM",
+                        "message": "EBS encryption not explicitly defined",
                         "dimension": "infrastructure_risk"
                     })
 
-            if rtype == "aws_db_instance":
-                if not re.search(r'storage_encrypted\s*=\s*true', body):
-                    violations.append({
-                        "rule_id": "TF_RDS_ENCRYPTION_MISSING",
-                        "file": rel, "resource": res,
-                        "severity": "HIGH",
-                        "message": "RDS missing storage_encrypted=true",
-                        "dimension": "infrastructure_risk"
-                    })
-
+            # -------------------------
+            # SNS/SQS
+            # -------------------------
             if rtype in ("aws_sns_topic", "aws_sqs_queue"):
-                if not re.search(r'kms_master_key_id', body):
+                if "kms_master_key_id" not in body:
                     violations.append({
-                        "rule_id": "TF_SNS_SQS_NO_KMS", "file": rel,
-                        "resource": res, "severity": "MEDIUM",
+                        "rule_id": "TF_SNS_SQS_NO_KMS",
+                        "file": rel,
+                        "resource": res,
+                        "severity": "MEDIUM",
                         "message": f"{rtype} missing KMS encryption",
                         "dimension": "infrastructure_risk"
                     })

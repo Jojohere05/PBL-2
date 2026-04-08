@@ -30,3 +30,4 @@ reportlab==4.0.8
 # File Parsing / Config
 openpyxl==3.1.2
 toml==0.10.2
+packaging==24.0

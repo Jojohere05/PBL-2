@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FinGuard Research Graphs - JPG Export</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Segoe UI',Arial,sans-serif; background:#fff; padding:20px; }
+.chart-box { background:#fff; border:1px solid #e5e7eb; margin:0 auto 40px; padding:20px; }
+h2 { text-align:center; color:#1E3A5F; font-size:16px; margin-bottom:15px; }
+.controls { text-align:center; margin:20px 0 30px; }
+.controls button { padding:12px 32px; font-size:16px; background:#2563EB; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:bold; }
+.controls button:hover { background:#1d4ed8; }
+.status { text-align:center; font-size:14px; color:#059669; margin:10px 0; }
+</style>
+</head>
+<body>
+
+<h1 style="text-align:center;color:#1E3A5F;margin-bottom:10px;">FinGuard Research Paper — Charts from JSON Scan Data</h1>
+<p style="text-align:center;color:#6B7280;margin-bottom:5px;">Data source: <code>test_results/*.json</code> (9 repositories, latest scan per repo)</p>
+
+<div class="controls">
+  <button onclick="downloadAllJPG()">Download All Charts as JPG</button>
+</div>
+<div id="status" class="status"></div>
+
+<!-- JSON DATA FROM SCAN RESULTS (extracted from actual files) -->
+<script>
+const SCAN_DATA = {
+  "bridgecrewio/terragoat": { risk:100, decision:"BLOCK", amplified:false, fintech:false, total:38, secrets:28, deps:0, terraform:15, crit:6, high:29, med:2, low:1, escalated:6, verdicts:{CONFIRM:32,ESCALATE:6} },
+  "plaid/quickstart":       { risk:100, decision:"BLOCK", amplified:false, fintech:true,  total:44, secrets:0,  deps:44,terraform:0,  crit:0, high:44, med:0, low:0, escalated:0 },
+  "maybe-finance/maybe":    { risk:31,  decision:"WARN",  amplified:true,  fintech:true,  total:1,  secrets:1,  deps:0, terraform:0,  crit:0, high:1,  med:0, low:0, escalated:0 },
+  "expressjs/express":      { risk:78,  decision:"BLOCK", amplified:true,  fintech:true,  total:4,  secrets:4,  deps:0, terraform:0,  crit:0, high:4,  med:0, low:0, escalated:0 },
+  "trufflesecurity/test_keys": { risk:76, decision:"BLOCK", amplified:false, fintech:false, total:2, secrets:2, deps:0, terraform:0, crit:1, high:1, med:0, low:0, escalated:1 },
+  "actualbudget/actual":    { risk:100, decision:"BLOCK", amplified:true,  fintech:true,  total:137,secrets:137,deps:0, terraform:0,  crit:0, high:137,med:0, low:0, escalated:0 },
+  "killbill/killbill":      { risk:58,  decision:"REVIEW",amplified:true,  fintech:true,  total:3,  secrets:3,  deps:0, terraform:0,  crit:0, high:3,  med:0, low:0, escalated:0 },
+  "OpenBankingUK/read-write-api-specs": { risk:0, decision:"ALLOW", amplified:false, fintech:true, total:0, secrets:0, deps:0, terraform:0, crit:0, high:0, med:0, low:0, escalated:0 },
+  "hashicorp/terraform-aws-vpc": { risk:0, decision:"ALLOW", amplified:false, fintech:false, total:0, secrets:0, deps:0, terraform:0, crit:0, high:0, med:0, low:0, escalated:0 }
+};
+
+// Filter repos with violations
+const ACTIVE = Object.fromEntries(Object.entries(SCAN_DATA).filter(([k,v]) => v.total > 0));
+const ALL_REPOS = Object.keys(SCAN_DATA);
+const ACTIVE_REPOS = Object.keys(ACTIVE);
+
+// Aggregates
+const AGG = {
+  totalViolations: Object.values(SCAN_DATA).reduce((s,v) => s+v.total, 0),
+  totalSecrets: Object.values(SCAN_DATA).reduce((s,v) => s+v.secrets, 0),
+  totalDeps: Object.values(SCAN_DATA).reduce((s,v) => s+v.deps, 0),
+  totalTerraform: Object.values(SCAN_DATA).reduce((s,v) => s+v.terraform, 0),
+  totalCrit: Object.values(SCAN_DATA).reduce((s,v) => s+v.crit, 0),
+  totalHigh: Object.values(SCAN_DATA).reduce((s,v) => s+v.high, 0),
+  totalMed: Object.values(SCAN_DATA).reduce((s,v) => s+v.med, 0),
+  totalLow: Object.values(SCAN_DATA).reduce((s,v) => s+v.low, 0),
+};
+
+function shortName(r) { return r.split('/').pop(); }
+</script>
+
+<!-- CHART 1 -->
+<div id="c1-wrap">
+<h2>Figure 1: Total Violations Detected per Repository (from JSON)</h2>
+<div class="chart-box" style="width:950px;height:450px;"><canvas id="c1"></canvas></div>
+</div>
+
+<!-- CHART 2 -->
+<div id="c2-wrap">
+<h2>Figure 2: Violation Distribution by Agent Category (from JSON)</h2>
+<div class="chart-box" style="width:950px;height:450px;"><canvas id="c2"></canvas></div>
+</div>
+
+<!-- CHART 3 -->
+<div id="c3-wrap">
+<h2>Figure 3: Severity Distribution Across All Scans (N=229 from JSON)</h2>
+<div class="chart-box" style="width:550px;height:420px;"><canvas id="c3"></canvas></div>
+</div>
+
+<!-- CHART 4 -->
+<div id="c4-wrap">
+<h2>Figure 4: Risk Score and Decision by Repository (from JSON)</h2>
+<div class="chart-box" style="width:950px;height:500px;"><canvas id="c4"></canvas></div>
+</div>
+
+<!-- CHART 5 -->
+<div id="c5-wrap">
+<h2>Figure 5: False Positive Reduction — Secrets Agent (96.9%)</h2>
+<div class="chart-box" style="width:800px;height:420px;"><canvas id="c5"></canvas></div>
+</div>
+
+<!-- CHART 6 -->
+<div id="c6-wrap">
+<h2>Figure 6: Dependency Scan Optimization (260x Speedup)</h2>
+<div class="chart-box" style="width:600px;height:420px;"><canvas id="c6"></canvas></div>
+</div>
+
+<!-- CHART 7 -->
+<div id="c7-wrap">
+<h2>Figure 7: Regulatory Framework Coverage — FinGuard vs Generic Tools</h2>
+<div class="chart-box" style="width:600px;height:520px;"><canvas id="c7"></canvas></div>
+</div>
+
+<!-- CHART 8 -->
+<div id="c8-wrap">
+<h2>Figure 8: Fintech vs Non-Fintech Comparison (from JSON context)</h2>
+<div class="chart-box" style="width:700px;height:420px;"><canvas id="c8"></canvas></div>
+</div>
+
+<!-- CHART 9 -->
+<div id="c9-wrap">
+<h2>Figure 9: ADK Orchestrator — Gemini Validation (from JSON verdicts)</h2>
+<div class="chart-box" style="width:550px;height:420px;"><canvas id="c9"></canvas></div>
+</div>
+
+<!-- CHART 10 -->
+<div id="c10-wrap">
+<h2>Figure 10: Scan Pipeline Timing Breakdown (Avg 6.5s)</h2>
+<div class="chart-box" style="width:950px;height:500px;"><canvas id="c10"></canvas></div>
+</div>
+
+<!-- CHART 11 -->
+<div id="c11-wrap">
+<h2>Figure 11: Fintech Amplification Effect (from JSON amplified field)</h2>
+<div class="chart-box" style="width:700px;height:420px;"><canvas id="c11"></canvas></div>
+</div>
+
+<script>
+Chart.defaults.font.family = "'Segoe UI',Arial,sans-serif";
+Chart.defaults.font.size = 13;
+Chart.defaults.animation = false; // Disable animation for clean export
+
+// ── CHART 1 ──
+new Chart(document.getElementById('c1'), {
+  type:'bar',
+  data:{ labels:ALL_REPOS.map(shortName), datasets:[{ label:'Violations', data:ALL_REPOS.map(r=>SCAN_DATA[r].total), backgroundColor:ALL_REPOS.map(r=>SCAN_DATA[r].total>0?'#2563EB':'#D1D5DB'), borderRadius:4 }] },
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ y:{title:{display:true,text:'Number of Violations',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}}, x:{title:{display:true,text:'Repository (from test_results/)',font:{size:14,weight:'bold'}},grid:{display:false}} } }
+});
+
+// ── CHART 2 ──
+new Chart(document.getElementById('c2'), {
+  type:'bar',
+  data:{ labels:ACTIVE_REPOS.map(shortName), datasets:[
+    {label:'Secrets',data:ACTIVE_REPOS.map(r=>ACTIVE[r].secrets),backgroundColor:'#2563EB',borderRadius:2},
+    {label:'Dependencies',data:ACTIVE_REPOS.map(r=>ACTIVE[r].deps),backgroundColor:'#EA580C',borderRadius:2},
+    {label:'Terraform',data:ACTIVE_REPOS.map(r=>ACTIVE[r].terraform),backgroundColor:'#059669',borderRadius:2}
+  ]},
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'top'}}, scales:{x:{stacked:true,grid:{display:false}},y:{stacked:true,title:{display:true,text:'Violations',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}}} }
+});
+
+// ── CHART 3 ──
+new Chart(document.getElementById('c3'), {
+  type:'doughnut',
+  data:{ labels:[`CRITICAL (${AGG.totalCrit})`,`HIGH (${AGG.totalHigh})`,`MEDIUM (${AGG.totalMed})`,`LOW (${AGG.totalLow})`], datasets:[{data:[AGG.totalCrit,AGG.totalHigh,AGG.totalMed,AGG.totalLow],backgroundColor:['#991B1B','#C2410C','#CA8A04','#15803D'],borderWidth:3,borderColor:'#fff'}] },
+  options:{ responsive:true, maintainAspectRatio:false, cutout:'50%', plugins:{legend:{position:'right',labels:{font:{size:13,weight:'bold'},padding:15}}} }
+});
+
+// ── CHART 4 ──
+const sortedRepos = ALL_REPOS.slice().sort((a,b) => SCAN_DATA[a].risk - SCAN_DATA[b].risk);
+const decColors = {ALLOW:'#059669',WARN:'#D97706',REVIEW:'#EA580C',BLOCK:'#DC2626'};
+new Chart(document.getElementById('c4'), {
+  type:'bar',
+  data:{ labels:sortedRepos.map(shortName), datasets:[{label:'Risk Score',data:sortedRepos.map(r=>SCAN_DATA[r].risk),backgroundColor:sortedRepos.map(r=>decColors[SCAN_DATA[r].decision]),borderRadius:4}] },
+  options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{ x:{max:110,title:{display:true,text:'Risk Score (0-100)',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}}, y:{grid:{display:false}} } }
+});
+
+// ── CHART 5 ──
+new Chart(document.getElementById('c5'), {
+  type:'bar',
+  data:{ labels:['Raw\nDetections','After Extension\nFilter','After Path\nBlacklist','After Entropy\nFilter'], datasets:[{label:'Remaining',data:[96,86,61,3],backgroundColor:['#DC2626','#EA580C','#D97706','#059669'],borderRadius:4}] },
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{y:{title:{display:true,text:'Detections',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}},x:{grid:{display:false}}} }
+});
+
+// ── CHART 6 ──
+new Chart(document.getElementById('c6'), {
+  type:'bar',
+  data:{ labels:['Sequential Scan\n(Baseline)','Pre-computed Index\n(FinGuard)'], datasets:[{data:[260,1],backgroundColor:['#DC2626','#059669'],borderRadius:6,barThickness:80}] },
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{y:{title:{display:true,text:'Time (seconds)',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}},x:{grid:{display:false}}} }
+});
+
+// ── CHART 7 ──
+new Chart(document.getElementById('c7'), {
+  type:'radar',
+  data:{ labels:['RBI IT Framework\n(8 rules)','PCI-DSS v4\n(15 rules)','DPDP Act 2023\n(10 rules)','SEBI Cybersecurity\n(8 rules)'], datasets:[
+    {label:'FinGuard',data:[100,100,100,100],fill:true,backgroundColor:'rgba(37,99,235,0.2)',borderColor:'#2563EB',borderWidth:3,pointRadius:6,pointBackgroundColor:'#2563EB'},
+    {label:'Snyk',data:[0,27,0,0],fill:true,backgroundColor:'rgba(220,38,38,0.1)',borderColor:'#DC2626',borderWidth:2,borderDash:[5,5],pointRadius:5,pointBackgroundColor:'#DC2626'},
+    {label:'Checkov',data:[0,20,0,0],fill:true,backgroundColor:'rgba(234,88,12,0.1)',borderColor:'#EA580C',borderWidth:2,borderDash:[5,5],pointRadius:5,pointBackgroundColor:'#EA580C'}
+  ]},
+  options:{ responsive:true, maintainAspectRatio:false, scales:{r:{min:0,max:100,ticks:{stepSize:25,font:{size:10}},pointLabels:{font:{size:12,weight:'bold'}}}}, plugins:{legend:{position:'bottom',labels:{font:{size:12},padding:15}}} }
+});
+
+// ── CHART 8 ──
+const fintechRepos = Object.entries(SCAN_DATA).filter(([k,v])=>v.fintech);
+const nonFintechRepos = Object.entries(SCAN_DATA).filter(([k,v])=>!v.fintech);
+const avgFintechScore = fintechRepos.reduce((s,[k,v])=>s+v.risk,0)/fintechRepos.length;
+const avgNonFintechScore = nonFintechRepos.reduce((s,[k,v])=>s+v.risk,0)/nonFintechRepos.length;
+const fintechAmplified = fintechRepos.filter(([k,v])=>v.amplified).length/fintechRepos.length*100;
+const nonFintechAmplified = nonFintechRepos.filter(([k,v])=>v.amplified).length/nonFintechRepos.length*100;
+
+new Chart(document.getElementById('c8'), {
+  type:'bar',
+  data:{ labels:[`Fintech (${fintechRepos.length} repos)`,`Non-Fintech (${nonFintechRepos.length} repos)`], datasets:[
+    {label:'Avg Risk Score',data:[avgFintechScore,avgNonFintechScore],backgroundColor:'#2563EB',borderRadius:4},
+    {label:'% Amplified',data:[fintechAmplified,nonFintechAmplified],backgroundColor:'#DC2626',borderRadius:4}
+  ]},
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'top'}}, scales:{y:{title:{display:true,text:'Value',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}},x:{grid:{display:false}}} }
+});
+
+// ── CHART 9 ──
+new Chart(document.getElementById('c9'), {
+  type:'doughnut',
+  data:{ labels:['CONFIRM - 32 (84.2%)','ESCALATE - 6 (15.8%)','DISMISS - 0 (0%)'], datasets:[{data:[32,6,0.3],backgroundColor:['#2563EB','#DC2626','#e5e7eb'],borderWidth:3,borderColor:'#fff'}] },
+  options:{ responsive:true, maintainAspectRatio:false, cutout:'45%', plugins:{legend:{position:'right',labels:{font:{size:12,weight:'bold'},padding:15}}} }
+});
+
+// ── CHART 10 ──
+new Chart(document.getElementById('c10'), {
+  type:'bar',
+  data:{ labels:['Repo Download','Context Classifier','Secrets Agent','Dependency Agent','Terraform Agent','ADK Orchestrator','RAG+LLM Explain','Risk Engine','Report Gen'], datasets:[{data:[1.8,0.2,0.5,0.3,0.1,1.5,1.5,0.1,0.5],backgroundColor:['#6B7280','#0D9488','#2563EB','#EA580C','#059669','#7C3AED','#7C3AED','#D97706','#6B7280'],borderRadius:4}] },
+  options:{ indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{x:{title:{display:true,text:'Time (seconds)',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}},y:{grid:{display:false}}} }
+});
+
+// ── CHART 11 ──
+new Chart(document.getElementById('c11'), {
+  type:'bar',
+  data:{ labels:['maybe-finance','expressjs'], datasets:[
+    {label:'Before Amplification',data:[24,60],backgroundColor:'#9CA3AF',borderRadius:4},
+    {label:'After Amplification (x1.3)',data:[31,78],backgroundColor:'#DC2626',borderRadius:4}
+  ]},
+  options:{ responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'top'}}, scales:{y:{max:100,title:{display:true,text:'Risk Score',font:{size:14,weight:'bold'}},grid:{color:'#e5e7eb'}},x:{grid:{display:false}}} }
+});
+
+// ── JPG DOWNLOAD FUNCTION ──
+function downloadAllJPG() {
+  const status = document.getElementById('status');
+  const canvases = document.querySelectorAll('canvas');
+  const names = ['fig1_violations_per_repo','fig2_category_distribution','fig3_severity_distribution',
+    'fig4_risk_scores','fig5_false_positive_reduction','fig6_performance_speedup',
+    'fig7_compliance_radar','fig8_fintech_comparison','fig9_gemini_validation',
+    'fig10_pipeline_timing','fig11_fintech_amplification'];
+  
+  let count = 0;
+  canvases.forEach((canvas, i) => {
+    const tempCanvas = document.createElement('canvas');
+    const scale = 2; // 2x for high-res
+    tempCanvas.width = canvas.width * scale;
+    tempCanvas.height = canvas.height * scale;
+    const ctx = tempCanvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+    
+    tempCanvas.toBlob(function(blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = names[i] + '.jpg';
+      a.click();
+      URL.revokeObjectURL(url);
+      count++;
+      status.textContent = `Downloaded ${count}/${canvases.length} charts...`;
+      if (count === canvases.length) {
+        status.textContent = `All ${count} JPG charts downloaded successfully!`;
+      }
+    }, 'image/jpeg', 0.95);
+  });
+}
+</script>
+
+</body>
+</html>

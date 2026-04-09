@@ -11,9 +11,6 @@ jobs:
   scan:
     runs-on: ubuntu-latest
 
-    env:
-      FINGUARD_API_URL: ${{ secrets.FINGUARD_API_URL }}
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,48 +21,31 @@ jobs:
             -x "*.git*" "node_modules/*" "frontend/node_modules/*" "venv/*" "dist/*" "build/*" "__pycache__/*"
 
       - name: Call FinGuard backend API
-        id: call_api
+        env:
+          BACKEND_URL: ${{ secrets.FINGUARD_API_URL }}
         run: |
-          if [ -z "${FINGUARD_API_URL}" ]; then
-            echo "FINGUARD_API_URL is not set. Configure it as a repository secret pointing to your FinGuard backend (e.g. https://your-app.railway.app)." >&2
+          if [ -z "${BACKEND_URL}" ]; then
+            echo "FINGUARD_API_URL is not set. Configure it as a repository secret pointing to your FinGuard backend (e.g. https://pbl-2-1dlb.onrender.com)." >&2
             exit 1
           fi
 
-          echo "Calling FinGuard at ${FINGUARD_API_URL}/api/scan ..."
+          echo "Calling FinGuard at: ${BACKEND_URL}/api/scan/"
 
-          resp=$(curl -sS -X POST "${FINGUARD_API_URL}/api/scan" \
+          STATUS=$(curl -sS -L -w "%{http_code}" -o finguard-result.json \
+            -X POST \
             -F "file=@repo.zip" \
-            -H "Accept: application/json")
+            "${BACKEND_URL%/}/api/scan/")
 
-          echo "Raw response from FinGuard:" 
-          echo "$resp"
+          echo "HTTP status: ${STATUS}"
+          echo "Raw response from FinGuard:"
+          cat finguard-result.json || true
 
-          echo "$resp" > finguard-result.json
+            if [ "${STATUS}" != "200" ]; then
+            echo "FinGuard returned non-200 HTTP status ${STATUS}"
+            exit 1
+            fi
 
-          python - << 'PY'
-import json, sys
-
-try:
-    data = json.load(open('finguard-result.json', 'r', encoding='utf-8'))
-except Exception as e:
-    print(f"Failed to parse FinGuard JSON: {e}")
-    sys.exit(1)
-
-decision = data.get('decision', 'ALLOW')
-score    = data.get('risk_score', 0)
-summary  = data.get('summary', {})
-
-print("\n=== FinGuard Decision ===")
-print(f"Decision : {decision}")
-print(f"Score    : {score}/100")
-print(f"Summary  : {json.dumps(summary, indent=2)}")
-
-blocked = decision.upper() == 'BLOCK'
-print(f"::set-output name=decision::{decision}")
-print(f"::set-output name=score::{score}")
-if blocked:
-    sys.exit(1)
-PY
+            python scripts/print_finguard_summary.py
 
       - name: Upload JSON result artifact
         uses: actions/upload-artifact@v4

@@ -186,24 +186,7 @@ def _should_skip_file(abs_path: str, rel_path: str) -> bool:
 
 
 def _should_skip_generic_api_key(line: str) -> bool:
-    value = _extract_value_after_assignment(line)
-    value_norm = value.lower()
-
-    if re.fullmatch(r"[a-zA-Z_]+", value):
-        return True
-
-    if len(value) < 12:
-        return True
-
-    if any(term in value_norm for term in GENERIC_PLACEHOLDER_TERMS):
-        return True
-
-    if not re.search(r"[A-Za-z]", value) or not re.search(r"[0-9]", value):
-        return True
-
-    if _entropy(value) < 3.8:
-        return True
-
+    # Disabled: rely on the underlying gitleaks rule without extra filtering
     return False
 
 

@@ -1,0 +1,597 @@
+[
+  {
+    "id": "PCI_1_2_1",
+    "framework": "PCI-DSS v4",
+    "section": "1.2.1",
+    "title": "Network access to cardholder systems must be restricted to required services only.",
+    "description": "Network access to cardholder systems must be restricted to required services only. Infra: Security groups must restrict inbound/outbound traffic by port and CIDR..",
+    "severity": "HIGH",
+    "check": "SG allows 0.0.0.0/0 on port 22",
+    "fix": "Security groups must restrict inbound/outbound traffic by port and CIDR.",
+    "keywords": [
+      "aws",
+      "sg",
+      "network",
+      "firewall",
+      "terraform",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_1_3_1",
+    "framework": "PCI-DSS v4",
+    "section": "1.3.1",
+    "title": "Public-facing systems must be isolated from internal cardholder systems.",
+    "description": "Public-facing systems must be isolated from internal cardholder systems. Infra: ALB must not directly route traffic to DB/private subnets..",
+    "severity": "HIGH",
+    "check": "ALB connected to RDS",
+    "fix": "ALB must not directly route traffic to DB/private subnets.",
+    "keywords": [
+      "aws",
+      "segmentation",
+      "dmz",
+      "vpc",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_3_5_1",
+    "framework": "PCI-DSS v4",
+    "section": "3.5.1",
+    "title": "PAN must be protected with strong cryptography wherever stored.",
+    "description": "PAN must be protected with strong cryptography wherever stored. Infra: Storage systems must enforce encryption at rest..",
+    "severity": "HIGH",
+    "check": "unencrypted PAN table",
+    "fix": "Storage systems must enforce encryption at rest.",
+    "keywords": [
+      "pci",
+      "encryption",
+      "pan",
+      "db"
+    ]
+  },
+  {
+    "id": "PCI_3_6_1",
+    "framework": "PCI-DSS v4",
+    "section": "3.6.1",
+    "title": "Encryption keys must be securely managed.",
+    "description": "Encryption keys must be securely managed. Infra: KMS must enforce rotation and strict IAM access..",
+    "severity": "HIGH",
+    "check": "rotation disabled",
+    "fix": "KMS must enforce rotation and strict IAM access.",
+    "keywords": [
+      "kms",
+      "key",
+      "encryption",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_4_2_1",
+    "framework": "PCI-DSS v4",
+    "section": "4.2.1",
+    "title": "Cardholder data must be transmitted securely.",
+    "description": "Cardholder data must be transmitted securely. Infra: APIs and load balancers must enforce HTTPS only..",
+    "severity": "HIGH",
+    "check": "HTTP listener enabled",
+    "fix": "APIs and load balancers must enforce HTTPS only.",
+    "keywords": [
+      "https",
+      "api",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_6_2_0",
+    "framework": "PCI-DSS v4",
+    "section": "6.2.0",
+    "title": "Vulnerabilities must be identified and addressed promptly.",
+    "description": "Vulnerabilities must be identified and addressed promptly. Infra: CI must fail on critical CVEs in dependencies..",
+    "severity": "HIGH",
+    "check": "vulnerable dependency merged",
+    "fix": "CI must fail on critical CVEs in dependencies.",
+    "keywords": [
+      "cve",
+      "dependency",
+      "ci",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_6_4_3",
+    "framework": "PCI-DSS v4",
+    "section": "6.4.3",
+    "title": "Secure coding practices must be enforced for changes.",
+    "description": "Secure coding practices must be enforced for changes. Infra: CI must include security checks before merge..",
+    "severity": "HIGH",
+    "check": "merge without scan",
+    "fix": "CI must include security checks before merge.",
+    "keywords": [
+      "cicd",
+      "securecode",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_7_2_1",
+    "framework": "PCI-DSS v4",
+    "section": "7.2.1",
+    "title": "Access must follow least privilege principles.",
+    "description": "Access must follow least privilege principles. Infra: IAM policies must not allow wildcard actions..",
+    "severity": "HIGH",
+    "check": "Action=\"*\" used",
+    "fix": "IAM policies must not allow wildcard actions.",
+    "keywords": [
+      "iam",
+      "leastprivilege",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_8_4_2",
+    "framework": "PCI-DSS v4",
+    "section": "8.4.2",
+    "title": "MFA must be enforced for admin access.",
+    "description": "MFA must be enforced for admin access. Infra: IAM users must enable MFA..",
+    "severity": "HIGH",
+    "check": "admin without MFA",
+    "fix": "IAM users must enable MFA.",
+    "keywords": [
+      "mfa",
+      "iam",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_8_6_1",
+    "framework": "PCI-DSS v4",
+    "section": "8.6.1",
+    "title": "Passwords must meet complexity and protection requirements.",
+    "description": "Passwords must meet complexity and protection requirements. Infra: Secrets must not be hardcoded in codebase..",
+    "severity": "HIGH",
+    "check": "DB password in repo",
+    "fix": "Secrets must not be hardcoded in codebase.",
+    "keywords": [
+      "password",
+      "secret",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_10_2_1",
+    "framework": "PCI-DSS v4",
+    "section": "10.2.1",
+    "title": "Access to cardholder data must be logged.",
+    "description": "Access to cardholder data must be logged. Infra: DB/API logs must be enabled..",
+    "severity": "HIGH",
+    "check": "logging disabled",
+    "fix": "DB/API logs must be enabled.",
+    "keywords": [
+      "logging",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_10_5_1",
+    "framework": "PCI-DSS v4",
+    "section": "10.5.1",
+    "title": "Logs must be protected against tampering.",
+    "description": "Logs must be protected against tampering. Infra: Logs must be centralized and immutable..",
+    "severity": "HIGH",
+    "check": "local logs only",
+    "fix": "Logs must be centralized and immutable.",
+    "keywords": [
+      "logs",
+      "security",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_11_3_1",
+    "framework": "PCI-DSS v4",
+    "section": "11.3.1",
+    "title": "External vulnerability scans must be performed periodically.",
+    "description": "External vulnerability scans must be performed periodically. Infra: Public endpoints must undergo automated scanning..",
+    "severity": "HIGH",
+    "check": "exposed admin endpoint",
+    "fix": "Public endpoints must undergo automated scanning.",
+    "keywords": [
+      "scan",
+      "api",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_3_3_0",
+    "framework": "PCI-DSS v4",
+    "section": "3.3.0",
+    "title": "PAN must be masked when displayed.",
+    "description": "PAN must be masked when displayed. Infra: Logs/UI must not expose PAN..",
+    "severity": "HIGH",
+    "check": "PAN in logs",
+    "fix": "Logs/UI must not expose PAN.",
+    "keywords": [
+      "pan",
+      "logs",
+      "pci"
+    ]
+  },
+  {
+    "id": "PCI_12_5_2",
+    "framework": "PCI-DSS v4",
+    "section": "12.5.2",
+    "title": "Security responsibilities must be clearly assigned.",
+    "description": "Security responsibilities must be clearly assigned. Infra: IAM roles must not be shared or overly broad..",
+    "severity": "HIGH",
+    "check": "shared root account",
+    "fix": "IAM roles must not be shared or overly broad.",
+    "keywords": [
+      "iam",
+      "roles",
+      "pci"
+    ]
+  },
+  {
+    "id": "DPDP_6_SEC",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Personal data must be protected with reasonable safeguards.",
+    "description": "Personal data must be protected with reasonable safeguards. Infra: PII storage must enforce encryption + IAM restrictions..",
+    "severity": "HIGH",
+    "check": "unencrypted PII DB",
+    "fix": "PII storage must enforce encryption + IAM restrictions.",
+    "keywords": [
+      "dpdp",
+      "pii",
+      "encryption"
+    ]
+  },
+  {
+    "id": "DPDP_6_LOG",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Systems must log personal data processing activities.",
+    "description": "Systems must log personal data processing activities. Infra: Monitoring/logging must be enabled..",
+    "severity": "HIGH",
+    "check": "no logs configured",
+    "fix": "Monitoring/logging must be enabled.",
+    "keywords": [
+      "logging",
+      "dpdp"
+    ]
+  },
+  {
+    "id": "DPDP_6_RET",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Personal data must support deletion controls.",
+    "description": "Personal data must support deletion controls. Infra: Storage must enforce lifecycle deletion..",
+    "severity": "HIGH",
+    "check": "no lifecycle rule",
+    "fix": "Storage must enforce lifecycle deletion.",
+    "keywords": [
+      "lifecycle",
+      "dpdp"
+    ]
+  },
+  {
+    "id": "DPDP_6_BKP",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Systems must ensure availability via backups.",
+    "description": "Systems must ensure availability via backups. Infra: Backup policies must be configured..",
+    "severity": "HIGH",
+    "check": "no backup configured",
+    "fix": "Backup policies must be configured.",
+    "keywords": [
+      "backup",
+      "dpdp"
+    ]
+  },
+  {
+    "id": "DPDP_6_ACC",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Access must be restricted to authorized roles.",
+    "description": "Access must be restricted to authorized roles. Infra: IAM must restrict PII access..",
+    "severity": "HIGH",
+    "check": "wildcard IAM policy",
+    "fix": "IAM must restrict PII access.",
+    "keywords": [
+      "iam",
+      "dpdp"
+    ]
+  },
+  {
+    "id": "DPDP_8",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 8",
+    "title": "Breaches must be detected and reported.",
+    "description": "Breaches must be detected and reported. Infra: Alerts must trigger on suspicious activity..",
+    "severity": "HIGH",
+    "check": "no alerts defined",
+    "fix": "Alerts must trigger on suspicious activity.",
+    "keywords": [
+      "alerts",
+      "dpdp"
+    ]
+  },
+  {
+    "id": "DPDP_3_4",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 3&4",
+    "title": "Processing must follow valid consent controls.",
+    "description": "Processing must follow valid consent controls. Infra: APIs must enforce authentication/validation..",
+    "severity": "HIGH",
+    "check": "open endpoint",
+    "fix": "APIs must enforce authentication/validation.",
+    "keywords": [
+      "consent",
+      "api"
+    ]
+  },
+  {
+    "id": "DPDP_5",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 5",
+    "title": "Cross-border transfers must be secured.",
+    "description": "Cross-border transfers must be secured. Infra: Transfers must use TLS encryption..",
+    "severity": "HIGH",
+    "check": "HTTP used",
+    "fix": "Transfers must use TLS encryption.",
+    "keywords": [
+      "dpdp",
+      "tls"
+    ]
+  },
+  {
+    "id": "DPDP_9",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 9",
+    "title": "Children\ufffds data must be strictly protected.",
+    "description": "Children\ufffds data must be strictly protected. Infra: Strong access restrictions required..",
+    "severity": "HIGH",
+    "check": "open dataset access",
+    "fix": "Strong access restrictions required.",
+    "keywords": [
+      "dpdp",
+      "data"
+    ]
+  },
+  {
+    "id": "DPDP_16",
+    "framework": "DPDP Rules 2025",
+    "section": "Rule 6",
+    "title": "Personal data must not be exposed in logs or telemetry.",
+    "description": "Personal data must not be exposed in logs or telemetry. Infra: Logs must mask sensitive identifiers (Aadhaar/PAN)..",
+    "severity": "HIGH",
+    "check": "Aadhaar present in logs",
+    "fix": "Logs must mask sensitive identifiers (Aadhaar/PAN).",
+    "keywords": [
+      "dpdp",
+      "logs",
+      "data"
+    ]
+  },
+  {
+    "id": "RBI_PG_7_4_iii",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(iii)",
+    "title": "Card credentials must not be stored post authorization.",
+    "description": "Card credentials must not be stored post authorization. Infra: No PAN/CVV stored in DB..",
+    "severity": "CRITICAL",
+    "check": "CVV stored",
+    "fix": "No PAN/CVV stored in DB.",
+    "keywords": [
+      "pci",
+      "payment"
+    ]
+  },
+  {
+    "id": "RBI_PG_7_4_iv",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(iv)",
+    "title": "Tokenization must protect sensitive payment data.",
+    "description": "Tokenization must protect sensitive payment data. Infra: Systems must use tokens not raw PAN..",
+    "severity": "CRITICAL",
+    "check": "raw PAN processed",
+    "fix": "Systems must use tokens not raw PAN.",
+    "keywords": [
+      "token",
+      "payment"
+    ]
+  },
+  {
+    "id": "RBI_PG_7_4_v",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(v)",
+    "title": "Logs must capture payment processing events.",
+    "description": "Logs must capture payment processing events. Infra: Payment APIs must log activity..",
+    "severity": "CRITICAL",
+    "check": "logs disabled",
+    "fix": "Payment APIs must log activity.",
+    "keywords": [
+      "logging",
+      "payment"
+    ]
+  },
+  {
+    "id": "RBI_PG_7_4_vi",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(vi)",
+    "title": "Stored payment data must be encrypted.",
+    "description": "Stored payment data must be encrypted. Infra: Storage must enforce encryption..",
+    "severity": "CRITICAL",
+    "check": "unencrypted bucket",
+    "fix": "Storage must enforce encryption.",
+    "keywords": [
+      "encryption",
+      "payment"
+    ]
+  },
+  {
+    "id": "RBI_PG_7_4_vii",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(vii)",
+    "title": "Secure storage norms must be enforced.",
+    "description": "Secure storage norms must be enforced. Infra: DB must enforce access restrictions..",
+    "severity": "CRITICAL",
+    "check": "public DB",
+    "fix": "DB must enforce access restrictions.",
+    "keywords": [
+      "db",
+      "security"
+    ]
+  },
+  {
+    "id": "RBI_PG_DS",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(viii)",
+    "title": "Logs must be securely retained.",
+    "description": "Logs must be securely retained. Infra: Central logging required..",
+    "severity": "CRITICAL",
+    "check": "local logs only",
+    "fix": "Central logging required.",
+    "keywords": [
+      "logging",
+      "security"
+    ]
+  },
+  {
+    "id": "RBI_PG_RET",
+    "framework": "RBI-PA-PG-2020",
+    "section": "7.4(IX)",
+    "title": "Payment data retention must be limited.",
+    "description": "Payment data retention must be limited. Infra: Lifecycle rules required..",
+    "severity": "CRITICAL",
+    "check": "no lifecycle policy",
+    "fix": "Lifecycle rules required.",
+    "keywords": [
+      "retention",
+      "data"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_01",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.4",
+    "title": "Investor and trading data must be encrypted at rest using strong cryptography.",
+    "description": "Investor and trading data must be encrypted at rest using strong cryptography. Infra: Databases and storage handling investor data must enforce encryption at rest using managed keys..",
+    "severity": "HIGH",
+    "check": "aws_db_instance.storage_encrypted=false",
+    "fix": "Databases and storage handling investor data must enforce encryption at rest using managed keys.",
+    "keywords": [
+      "sebi",
+      "encryption",
+      "db",
+      "aws",
+      "data"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_02",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.4",
+    "title": "Investor and trading data must be encrypted in transit across all systems.",
+    "description": "Investor and trading data must be encrypted in transit across all systems. Infra: APIs, load balancers, and internal services must enforce TLS-only communication..",
+    "severity": "HIGH",
+    "check": "HTTP listener active",
+    "fix": "APIs, load balancers, and internal services must enforce TLS-only communication.",
+    "keywords": [
+      "sebi",
+      "tls",
+      "api",
+      "encryption"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_03",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.5",
+    "title": "Critical trading infrastructure must be isolated from public networks.",
+    "description": "Critical trading infrastructure must be isolated from public networks. Infra: Trading systems must reside in private subnets with restricted SG rules..",
+    "severity": "HIGH",
+    "check": "DB in public subnet",
+    "fix": "Trading systems must reside in private subnets with restricted SG rules.",
+    "keywords": [
+      "sebi",
+      "network",
+      "aws",
+      "segregation"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_04",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.3",
+    "title": "Privileged access to trading infrastructure must enforce MFA and least privilege.",
+    "description": "Privileged access to trading infrastructure must enforce MFA and least privilege. Infra: IAM admin roles must require MFA and restrict permissions..",
+    "severity": "HIGH",
+    "check": "admin role without MFA",
+    "fix": "IAM admin roles must require MFA and restrict permissions.",
+    "keywords": [
+      "sebi",
+      "iam",
+      "mfa"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_05",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.2",
+    "title": "Logs from critical systems must be centrally collected and monitored.",
+    "description": "Logs from critical systems must be centrally collected and monitored. Infra: Logs must be forwarded to centralized logging or SIEM systems..",
+    "severity": "HIGH",
+    "check": "logs stored locally only",
+    "fix": "Logs must be forwarded to centralized logging or SIEM systems.",
+    "keywords": [
+      "sebi",
+      "logs",
+      "monitoring"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_06",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.6",
+    "title": "Suspicious or unauthorized activities must trigger immediate alerts.",
+    "description": "Suspicious or unauthorized activities must trigger immediate alerts. Infra: Alert rules must exist for failed login attempts and anomalies..",
+    "severity": "HIGH",
+    "check": "no alert rules configured",
+    "fix": "Alert rules must exist for failed login attempts and anomalies.",
+    "keywords": [
+      "sebi",
+      "alerts",
+      "security"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_07",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.1",
+    "title": "Critical systems must undergo continuous vulnerability monitoring.",
+    "description": "Critical systems must undergo continuous vulnerability monitoring. Infra: CI/CD must enforce automated vulnerability scanning..",
+    "severity": "HIGH",
+    "check": "no vulnerability scan stage",
+    "fix": "CI/CD must enforce automated vulnerability scanning.",
+    "keywords": [
+      "sebi",
+      "vuln",
+      "ci"
+    ]
+  },
+  {
+    "id": "SEBI_CSRF_08",
+    "framework": "SEBI Cybersecurity",
+    "section": "Clause 3.5",
+    "title": "Production trading environments must be segregated from non-production environments.",
+    "description": "Production trading environments must be segregated from non-production environments. Infra: Dev/staging/prod must use isolated infrastructure..",
+    "severity": "HIGH",
+    "check": "shared DB across env",
+    "fix": "Dev/staging/prod must use isolated infrastructure.",
+    "keywords": [
+      "sebi",
+      "segregation"
+    ]
+  }
+]

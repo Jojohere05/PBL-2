@@ -12,8 +12,9 @@ import re
 from collections import Counter
 from typing import Any
 
-# Resolve data path relative to project root (PBL-2/)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Resolve data path relative to monorepo root (PBL-2/)
+# __file__ = <repo>/finguard/agents/secrets_agent.py → go three levels up
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RULES_PATH = os.path.join(_PROJECT_ROOT, "data", "gitleaks", "gitleaks_rules.json")
 MAX_FILE_SIZE = 500 * 1024
 

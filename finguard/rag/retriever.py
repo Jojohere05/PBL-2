@@ -10,8 +10,9 @@ import os
 from pathlib import Path
 from typing import List, Dict
 
-# Resolve relative to project root (PBL-2/)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Resolve relative to monorepo root (PBL-2/)
+# __file__ = <repo>/finguard/rag/retriever.py → go three levels up
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RULES_PATH = os.path.join(_PROJECT_ROOT, "data", "rules", "compliance_rules.json")
 
 KEYWORD_MAP = {
